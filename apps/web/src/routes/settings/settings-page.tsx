@@ -28,7 +28,7 @@ import { BrainSection } from './brain-section';
 import { CapabilitiesSection } from './capabilities-section';
 import { DiagnosticsSection } from './diagnostics-section';
 import { KeybindingsSection } from './keybindings-section';
-import { ModelsSection } from './models-section';
+import { ModelsSection } from '../../components/settings/models-section';
 import { PermissionsSection } from './permissions-section';
 import { ProvidersSection } from './providers-section';
 import { TerminalSection } from './terminal-section';
