@@ -163,16 +163,9 @@ export function AppShell() {
       <div data-testid="app-shell" className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
         <header
           data-testid="topbar"
-          className="drag-region relative flex h-[var(--topbar-height)] shrink-0 items-center gap-2 border-b border-border pl-2"
-          style={{ paddingRight: 'calc(var(--window-controls-inset, 0px) + 1rem)' }}
+          className="drag-region grid h-[var(--topbar-height)] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 border-b border-border"
         >
-          {showModeSwitch && threadId !== null ? (
-            <div className="no-drag absolute top-1/2 left-1/2 hidden -translate-x-1/2 -translate-y-1/2 min-[900px]:flex">
-              <ThreadModeSwitch threadId={threadId} />
-            </div>
-          ) : null}
-
-          <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2 pl-2">
             {visibility.backToWorkspace ? (
               <Link
                 to="/"
@@ -205,7 +198,24 @@ export function AppShell() {
             ) : null}
           </div>
 
-          <div className="no-drag flex shrink-0 items-center gap-1">
+          {/* Always rendered so the three tracks never shift. The switch must stay in normal
+              flow: `no-drag` is only subtracted from the draggable region for in-flow boxes, so
+              an absolutely positioned wrapper leaves the topbar a caption area where a real
+              click drags the window instead of pressing the control. A grid item takes z-index
+              without positioning, so the cell stays above the side clusters without going
+              relative. */}
+          <div className="no-drag z-10 flex justify-center">
+            {showModeSwitch && threadId !== null ? (
+              <div className="hidden min-[900px]:flex">
+                <ThreadModeSwitch threadId={threadId} />
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            className="no-drag flex min-w-0 items-center justify-end gap-1"
+            style={{ paddingRight: 'calc(var(--window-controls-inset, 0px) + 1rem)' }}
+          >
             {hasThread && visibility.inspector && threadId !== null ? (
               <DockToolbar
                 threadId={threadId}
