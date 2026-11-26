@@ -23,7 +23,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useState } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 import {
   ASSISTANT_MESSAGE_MENU,
   USER_MESSAGE_HOVER,
@@ -39,7 +39,7 @@ import {
   blockCopyText,
   elapsedMs,
   formatDuration,
-  outputTail,
+  outputWindow,
   stepsSummary,
   toolDetail,
   toolDiffLines,
@@ -54,6 +54,58 @@ import {
   type ToolDiffLine,
   type ToolGroupBlock,
 } from './turn-blocks';
+
+/** The controlled expansion map the timeline owns, keyed by block or tool key. */
+export interface TimelineExpansion {
+  expanded: Readonly<Record<string, boolean>>;
+  toggle(key: string): void;
+}
+
+const TimelineExpansionContext = createContext<TimelineExpansion | null>(null);
+
+/** One expansion map for a whole timeline, so unmounted rows keep their state. */
+export function TimelineExpansionProvider({
+  value,
+  children,
+}: {
+  value: TimelineExpansion;
+  children: ReactNode;
+}) {
+  return (
+    <TimelineExpansionContext.Provider value={value}>{children}</TimelineExpansionContext.Provider>
+  );
+}
+
+/** What the active find hit needs from the rows it is rendered in. */
+export interface TimelineFindTarget {
+  needle: string;
+  /** The tool row whose body holds the active hit, if any. */
+  activeToolKey: string | null;
+}
+
+const TimelineFindContext = createContext<TimelineFindTarget | null>(null);
+
+export function TimelineFindProvider({
+  value,
+  children,
+}: {
+  value: TimelineFindTarget | null;
+  children: ReactNode;
+}) {
+  return <TimelineFindContext.Provider value={value}>{children}</TimelineFindContext.Provider>;
+}
+
+/**
+ * Open state for one disclosure row. Inside a timeline the map is controlled, so a
+ * row that scrolls out of the virtualizer window does not lose it; a timeline that
+ * renders rows without a provider keeps the old local state.
+ */
+function useExpansion(key: string): [boolean, () => void] {
+  const context = useContext(TimelineExpansionContext);
+  const [localOpen, setLocalOpen] = useState(false);
+  if (context === null) return [localOpen, () => setLocalOpen((value) => !value)];
+  return [context.expanded[key] === true, () => context.toggle(key)];
+}
 
 function StreamingCaret() {
   return (
@@ -399,7 +451,7 @@ export function FinalAnswer({ block, theme, threadId, onRetry, onEdit }: FinalAn
 }
 
 export function ReasoningRow({ block }: { block: ReasoningBlock }) {
-  const [open, setOpen] = useState(false);
+  const [open, toggle] = useExpansion(block.key);
   const duration = formatDuration(block.durationMs);
   const label = block.streaming
     ? 'Thinking'
@@ -412,7 +464,7 @@ export function ReasoningRow({ block }: { block: ReasoningBlock }) {
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         className={cn(
           'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-accent',
           focusRing,
@@ -537,6 +589,10 @@ function CopyOutputButton({ tool }: { tool: ToolItem }) {
 
 function ToolBody({ tool }: { tool: ToolItem }) {
   const detail = toolDetail(tool.name);
+  const find = useContext(TimelineFindContext);
+  // Only the row holding the active hit widens its window, so one match does not
+  // turn every tool output in the thread into a full dump.
+  const needle = find !== null && find.activeToolKey === tool.key ? find.needle : null;
 
   if (detail === 'diff') {
     const lines = toolDiffLines(tool.input);
@@ -544,7 +600,7 @@ function ToolBody({ tool }: { tool: ToolItem }) {
   }
 
   if (detail === 'matches') {
-    const matches = outputTail(tool.output, 30);
+    const matches = outputWindow(tool.output, needle, 30);
     return (
       <div className="border-t border-border/60 px-3 py-2">
         <pre
@@ -560,15 +616,20 @@ function ToolBody({ tool }: { tool: ToolItem }) {
     );
   }
 
-  const tail = outputTail(tool.output);
+  const tail = outputWindow(tool.output, needle);
+  const total = tail.hiddenBefore + tail.lines.length + tail.hidden;
+  const label =
+    tail.lines.length === 0
+      ? 'Output'
+      : tail.hiddenBefore > 0
+        ? `Output, lines ${tail.hiddenBefore + 1} to ${tail.hiddenBefore + tail.lines.length} of ${total}`
+        : tail.hidden > 0
+          ? `Output, last ${tail.lines.length} of ${total} lines`
+          : 'Output';
   return (
     <div className="border-t border-border/60 px-3 py-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-2xs tracking-wide text-muted-foreground uppercase">
-          {tail.hidden > 0
-            ? `Output, last ${tail.lines.length} of ${tail.hidden + tail.lines.length} lines`
-            : 'Output'}
-        </p>
+        <p className="text-2xs tracking-wide text-muted-foreground uppercase">{label}</p>
         <CopyOutputButton tool={tool} />
       </div>
       <pre
@@ -586,7 +647,7 @@ function ToolBody({ tool }: { tool: ToolItem }) {
 
 /** One 32px tool row: status, icon, verb, target, duration, and expandable body. */
 export function ToolRow({ tool }: { tool: ToolItem }) {
-  const [open, setOpen] = useState(false);
+  const [open, toggle] = useExpansion(tool.key);
   const Icon = toolIcon(tool.name);
   const target = toolTarget(tool.input);
   const duration = formatDuration(elapsedMs(tool.startedAt, tool.finishedAt));
@@ -601,7 +662,7 @@ export function ToolRow({ tool }: { tool: ToolItem }) {
         type="button"
         aria-expanded={open}
         aria-label={toolHeadline(tool.name, tool.input)}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         className={cn(
           'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent',
           focusRing,
@@ -654,7 +715,7 @@ export function ToolRow({ tool }: { tool: ToolItem }) {
 
 /** Consecutive tool calls on one rounded surface; two or more fold under a count. */
 export function ToolGroup({ block }: { block: ToolGroupBlock }) {
-  const [open, setOpen] = useState(false);
+  const [open, toggle] = useExpansion(block.key);
   const [first] = block.tools;
   if (first === undefined) return null;
   if (block.tools.length === 1) return <ToolRow tool={first} />;
@@ -672,7 +733,7 @@ export function ToolGroup({ block }: { block: ToolGroupBlock }) {
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         className={cn(
           'flex h-8 w-full items-center gap-2 px-2.5 text-left hover:bg-accent',
           focusRing,
@@ -735,7 +796,7 @@ export function ToolGroup({ block }: { block: ToolGroupBlock }) {
  * timeline, so markdown and the tool hover actions behave exactly as before.
  */
 export function StepsRow({ block, theme }: { block: StepsBlock; theme: MarkdownTheme }) {
-  const [open, setOpen] = useState(false);
+  const [open, toggle] = useExpansion(block.key);
   const Icon = block.tools > 0 ? Wrench : Brain;
 
   return (
@@ -743,7 +804,7 @@ export function StepsRow({ block, theme }: { block: StepsBlock; theme: MarkdownT
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggle}
         className={cn(
           'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-accent',
           focusRing,

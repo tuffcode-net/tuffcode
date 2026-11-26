@@ -38,6 +38,21 @@
   }
 }
 
+/*
+ * In-chat search paints the CSS Custom Highlight API, so matches are marked
+ * without touching the rendered markdown or the copy actions. Every hit is muted;
+ * the active hit gets the accent. Unsupported engines simply show no highlight.
+ */
+::highlight(thread-find) {
+  background-color: color-mix(in srgb, var(--primary) 28%, transparent);
+  color: var(--foreground);
+}
+
+::highlight(thread-find-active) {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--foreground) 18%, transparent) transparent;

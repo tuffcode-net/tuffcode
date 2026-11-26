@@ -1,8 +1,8 @@
 import { Link } from '@tanstack/react-router';
 import type { Thread, ThreadEventRow } from '@tuffcode/contracts';
-import { Badge, Button, EmptyState, buttonVariants } from '@tuffcode/ui';
-import { Activity, FolderOpen, GitBranch, MessagesSquare } from 'lucide-react';
-import { useCallback, useMemo, useRef, type RefObject } from 'react';
+import { Badge, Button, EmptyState, Kbd, buttonVariants } from '@tuffcode/ui';
+import { Activity, FolderOpen, GitBranch, MessagesSquare, Search } from 'lucide-react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { toast } from 'sonner';
 import { useAppStore } from '../../store/app-store';
 import { runAction, type ActionContext } from '../actions';
@@ -15,13 +15,16 @@ import { SubagentStrip } from '../subagents/SubagentStrip';
 import { useDockInset } from '../subagents/use-dock-inset';
 import { useSubagentList } from '../subagents/use-subagents';
 import { Composer } from './Composer';
+import { FindBar } from './find-bar';
 import { groupTimeline, type UserItem } from './grouping';
 import { useApprovalDecisions, useLocalUserMessages, useSupersededTurns } from './local-messages';
 import { StatusChip } from './status-chip';
-import { Timeline } from './Timeline';
+import { Timeline, type TimelineHandle } from './Timeline';
+import { foldTurnSteps, groupTurnBlocks } from './turn-blocks';
 import { TurnSummary } from './TurnSummary';
 import { TodoStrip } from '../todos/TodoList';
 import { ThreadModeSwitch } from './ThreadModeSwitch';
+import { openExpansion, useThreadFind } from './use-thread-find';
 import { useThreadStream } from './use-thread-stream';
 
 const EMPTY_EVENTS: readonly ThreadEventRow[] = [];
@@ -93,6 +96,58 @@ export function ThreadView({
       }),
     [approvals, events, messages, supersededTurns, userMessages],
   );
+  // The folded timeline is the finder's match source: the virtualizer only mounts
+  // the visible rows, so a DOM search could never see a match deep in history.
+  const blocks = useMemo(() => foldTurnSteps(groupTurnBlocks(items)), [items]);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<TimelineHandle>(null);
+  const find = useThreadFind({ threadId, blocks, rootRef });
+
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggleExpansion = useCallback((key: string) => {
+    setExpanded((current) => {
+      const next = { ...current };
+      if (next[key] === true) delete next[key];
+      else next[key] = true;
+      return next;
+    });
+  }, []);
+  const expansion = useMemo(
+    () => ({ expanded, toggle: toggleExpansion }),
+    [expanded, toggleExpansion],
+  );
+
+  const activeMatch = find.active;
+  const activeToolKey =
+    activeMatch !== null && activeMatch.field.startsWith('tool-')
+      ? (activeMatch.expandKeys.at(-1) ?? null)
+      : null;
+  const scrollKey =
+    activeMatch === null ? null : `${activeMatch.id}@${String(activeMatch.blockIndex)}`;
+  const expansionReady =
+    activeMatch === null || activeMatch.expandKeys.every((key) => expanded[key] === true);
+
+  // Open the rows the hit lives behind first; the scroll waits for that commit.
+  useLayoutEffect(() => {
+    if (activeMatch === null) return;
+    setExpanded(
+      (current) => openExpansion(current, activeMatch.expandKeys) as Record<string, boolean>,
+    );
+  }, [activeMatch]);
+
+  const scrolledRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (activeMatch === null || !expansionReady) return;
+    if (scrolledRef.current === scrollKey) return;
+    scrolledRef.current = scrollKey;
+    timelineRef.current?.scrollToBlock(activeMatch.blockIndex);
+  }, [activeMatch, expansionReady, scrollKey]);
+
+  const closeFind = useCallback(() => {
+    find.closeFind();
+    focusComposer();
+  }, [find]);
 
   const runMessageAction = useCallback(
     (id: 'message.retry' | 'message.edit', item: UserItem, input?: { text: string }) => {
@@ -122,7 +177,7 @@ export function ThreadView({
   const title = thread?.title ?? threadId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col">
       <header
         data-testid="thread-header"
         className="@container sticky top-0 z-20 grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur"
@@ -177,12 +232,26 @@ export function ThreadView({
           <div className="flex shrink-0 min-[900px]:hidden">
             <ThreadModeSwitch threadId={threadId} testId="thread-mode-switch-compact" />
           </div>
+          <FindButton onOpen={find.openFind} />
           <ActivityButton
             count={activityRunning}
             onOpen={() => requestInspectorTab('activity')}
           />
         </div>
       </header>
+
+      {find.open ? (
+        <FindBar
+          query={find.query}
+          index={find.index}
+          count={find.matches.length}
+          focusToken={find.focusToken}
+          onQueryChange={find.setQuery}
+          onNext={find.next}
+          onPrevious={find.previous}
+          onClose={closeFind}
+        />
+      ) : null}
 
       <div
         ref={stageRef}
@@ -218,9 +287,16 @@ export function ThreadView({
             </div>
           ) : (
             <Timeline
-              items={items}
+              ref={timelineRef}
+              blocks={blocks}
               theme={theme}
               threadId={threadId}
+              expansion={expansion}
+              find={{
+                query: find.open ? find.query : '',
+                activeBlockKey: activeMatch?.blockKey ?? null,
+                activeToolKey,
+              }}
               onRetryUserMessage={retryUserMessage}
               onEditUserMessage={editUserMessage}
             />
@@ -273,6 +349,28 @@ function ActivityButton({ count, onOpen }: { count: number; onOpen: () => void }
           {count}
         </Badge>
       ) : null}
+    </button>
+  );
+}
+
+/**
+ * The header's find control. The hint names the chord, which is also the only way
+ * to open the bar from the keyboard, so the button is a discoverable duplicate.
+ */
+function FindButton({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="thread-find-button"
+      onClick={onOpen}
+      title="Find in conversation (Ctrl F)"
+      aria-label="Find in conversation"
+      aria-keyshortcuts="Control+F"
+      className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-2xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+    >
+      <Search aria-hidden="true" strokeWidth={1.75} className="size-3.5" />
+      <span className="hidden @min-[40rem]:inline">Find</span>
+      <Kbd className="hidden @min-[56rem]:inline-flex">Ctrl F</Kbd>
     </button>
   );
 }

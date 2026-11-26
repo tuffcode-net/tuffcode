@@ -265,12 +265,45 @@ export interface OutputTail {
   hidden: number;
 }
 
+/** A slice of tool output, with counts for the lines hidden above and below it. */
+export interface OutputWindow extends OutputTail {
+  hiddenBefore: number;
+}
+
+/**
+ * The last few lines of tool output, with a count for what scrolled past. When a
+ * needle is given and appears in the output, the window centres on that line so a
+ * search hit is rendered instead of being hidden above the tail.
+ */
+export function outputWindow(output: string, needle: string | null, maxLines = 12): OutputWindow {
+  if (output.trim().length === 0) return { lines: [], hidden: 0, hiddenBefore: 0 };
+  const lines = output.replace(/\r\n/g, '\n').replace(/\s+$/, '').split('\n');
+  const at = needle === null || needle.length === 0 ? -1 : matchLine(lines, needle);
+  if (lines.length <= maxLines) return { lines, hidden: 0, hiddenBefore: 0 };
+  if (at === -1) {
+    return { lines: lines.slice(-maxLines), hidden: lines.length - maxLines, hiddenBefore: 0 };
+  }
+  const before = Math.max(0, Math.min(at - Math.floor(maxLines / 2), lines.length - maxLines));
+  return {
+    lines: lines.slice(before, before + maxLines),
+    hidden: lines.length - before - maxLines,
+    hiddenBefore: before,
+  };
+}
+
+/** The line that holds the first case-insensitive occurrence of a needle, or -1. */
+function matchLine(lines: readonly string[], needle: string): number {
+  const lower = needle.toLowerCase();
+  for (let index = 0; index < lines.length; index += 1) {
+    if ((lines[index] ?? '').toLowerCase().includes(lower)) return index;
+  }
+  return -1;
+}
+
 /** The last few lines of tool output, with a count for what scrolled past. */
 export function outputTail(output: string, maxLines = 12): OutputTail {
-  if (output.trim().length === 0) return { lines: [], hidden: 0 };
-  const lines = output.replace(/\r\n/g, '\n').replace(/\s+$/, '').split('\n');
-  if (lines.length <= maxLines) return { lines, hidden: 0 };
-  return { lines: lines.slice(-maxLines), hidden: lines.length - maxLines };
+  const { lines, hidden } = outputWindow(output, null, maxLines);
+  return { lines, hidden };
 }
 
 /** What the copy action puts on the clipboard for a block. */

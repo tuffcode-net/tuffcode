@@ -7,6 +7,7 @@ import {
   formatDuration,
   groupTurnBlocks,
   outputTail,
+  outputWindow,
   stepsSummary,
   toolDetail,
   toolDiffLines,
@@ -494,6 +495,40 @@ describe('outputTail', () => {
       hidden: 3,
     });
     expect(outputTail('   ')).toEqual({ lines: [], hidden: 0 });
+  });
+});
+
+describe('outputWindow', () => {
+  const long = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join('\n');
+
+  it('keeps the tail when no needle is given or the needle is absent', () => {
+    expect(outputWindow(long, null, 4)).toEqual({
+      lines: ['line 27', 'line 28', 'line 29', 'line 30'],
+      hidden: 26,
+      hiddenBefore: 0,
+    });
+    expect(outputWindow(long, 'missing', 4)).toEqual({
+      lines: ['line 27', 'line 28', 'line 29', 'line 30'],
+      hidden: 26,
+      hiddenBefore: 0,
+    });
+  });
+
+  it('centres the window on the line that holds the needle', () => {
+    const window = outputWindow(long, 'line 15', 4);
+    expect(window.lines).toEqual(['line 13', 'line 14', 'line 15', 'line 16']);
+    expect(window.hiddenBefore).toBe(12);
+    expect(window.hidden).toBe(14);
+  });
+
+  it('does not shift past either end', () => {
+    expect(outputWindow(long, 'line 29', 4).lines).toEqual([
+      'line 27',
+      'line 28',
+      'line 29',
+      'line 30',
+    ]);
+    expect(outputWindow(long, 'line 1', 4).lines).toEqual(['line 1', 'line 2', 'line 3', 'line 4']);
   });
 });
 
