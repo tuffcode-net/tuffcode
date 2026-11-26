@@ -69,6 +69,16 @@ describe('base system prompt', () => {
     expect(BASE_SYSTEM_PROMPT).toContain('the independence rule applies to delegated review');
   });
 
+  it('steers shell search to the grep and glob tools', () => {
+    expect(BASE_SYSTEM_PROMPT).toContain('Use grep and glob');
+    for (const shell of ['Select-String', 'Get-ChildItem -Recurse', 'findstr', 'grep in bash']) {
+      expect(BASE_SYSTEM_PROMPT).toContain(shell);
+    }
+    expect(BASE_SYSTEM_PROMPT).toContain('respect .gitignore');
+    expect(BASE_SYSTEM_PROMPT).toContain('structured tool cards');
+    expect(BASE_SYSTEM_PROMPT).toContain('grep modes: content, files, count');
+  });
+
   it('covers the required rules', () => {
     for (const phrase of [
       'Tuffcode',
@@ -183,6 +193,7 @@ describe('tool schemas', () => {
     ]);
     expect(Object.keys(byName.get('grep')?.parameters.properties ?? {})).toEqual([
       'pattern',
+      'mode',
       'path',
       'glob',
       'case_sensitive',

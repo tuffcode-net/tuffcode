@@ -1,6 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type {
   AdapterDeps,
@@ -13,6 +15,7 @@ import {
   classifyTool,
   createToolSessionState,
   executeTool,
+  ripgrepArgs,
 } from './tools.js';
 
 const LF = String.fromCharCode(10);
@@ -29,6 +32,27 @@ const deps: AdapterDeps = {
   logger,
   resolveCommand: async () => null,
   env: {},
+};
+
+// The fallback tests force a null resolution; this finds a real ripgrep so the
+// end-to-end ripgrep test can be skipped, not failed, on a host without one.
+const probe = promisify(execFile);
+const rgPath = await probe(process.platform === 'win32' ? 'where' : 'which', ['rg'], {
+  windowsHide: true,
+  timeout: 10000,
+})
+  .then(
+    ({ stdout }) =>
+      stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => line.length > 0) ?? null,
+  )
+  .catch(() => null);
+
+const rgDeps: AdapterDeps = {
+  ...deps,
+  resolveCommand: async (name) => (name === 'rg' ? rgPath : null),
 };
 
 let root: string;
@@ -202,6 +226,301 @@ describe('write, glob, and grep', () => {
     );
     expect(result.isError).toBe(true);
     expect(result.output).toContain('invalid regular expression');
+  });
+});
+
+describe('grep modes on the Node fallback', () => {
+  it('returns one path per matching file in files mode', async () => {
+    await writeFile(join(root, 'a.txt'), 'alpha' + LF);
+    await writeFile(join(root, 'b.txt'), 'nothing here' + LF);
+    await writeFile(join(root, 'c.txt'), 'alpha again' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output.split(LF).toSorted()).toEqual(['a.txt', 'c.txt']);
+  });
+
+  it('returns path:count in count mode', async () => {
+    await writeFile(join(root, 'a.txt'), 'alpha' + LF + 'alpha' + LF + 'beta' + LF);
+    await writeFile(join(root, 'b.txt'), 'beta' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'count' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('a.txt:2');
+  });
+
+  it('honours case_sensitive', async () => {
+    await writeFile(join(root, 'case.txt'), 'Beta' + LF);
+    const sensitive = await executeTool(
+      'grep',
+      { pattern: 'beta' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(sensitive.output).toBe('no matches for beta');
+    const insensitive = await executeTool(
+      'grep',
+      { pattern: 'beta', case_sensitive: false },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(insensitive.output).toBe('case.txt:1: Beta');
+  });
+
+  it('filters files with glob', async () => {
+    await writeFile(join(root, 'a.ts'), 'alpha' + LF);
+    await writeFile(join(root, 'a.js'), 'alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files', glob: '**/*.ts' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('a.ts');
+  });
+
+  it('skips ignored directories', async () => {
+    await mkdir(join(root, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(root, 'node_modules', 'pkg', 'index.js'), 'alpha' + LF);
+    await writeFile(join(root, 'keep.txt'), 'alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('keep.txt');
+  });
+
+  it('matches CRLF files without the carriage return', async () => {
+    await writeFile(join(root, 'crlf.txt'), 'one' + CRLF + 'alpha' + CRLF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('crlf.txt:2: alpha');
+  });
+
+  it('skips binary files', async () => {
+    await writeFile(
+      join(root, 'blob.dat'),
+      Buffer.concat([Buffer.from('alpha'), Buffer.from([0]), Buffer.from('tail' + LF)]),
+    );
+    await writeFile(join(root, 'text.txt'), 'alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('text.txt');
+  });
+
+  it('stops at max_results', async () => {
+    await writeFile(
+      join(root, 'many.txt'),
+      ['alpha one', 'alpha two', 'alpha three'].join(LF) + LF,
+    );
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', max_results: 2 },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output.split(LF)).toEqual(['many.txt:1: alpha one', 'many.txt:2: alpha two']);
+  });
+
+  it('searches a single file path', async () => {
+    await writeFile(join(root, 'one.txt'), 'alpha' + LF);
+    await writeFile(join(root, 'two.txt'), 'alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', path: 'one.txt' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('one.txt:1: alpha');
+  });
+
+  it('searches tracked dot directories', async () => {
+    await mkdir(join(root, '.github', 'workflows'), { recursive: true });
+    await writeFile(join(root, '.github', 'workflows', 'ci.yml'), 'run: alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      deps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('.github/workflows/ci.yml');
+  });
+});
+
+describe('ripgrep args', () => {
+  const base = {
+    pattern: 'alpha',
+    caseSensitive: true,
+    glob: null,
+    maxResults: 200,
+    searchPath: '.',
+  };
+
+  it('builds the content flag set', () => {
+    expect(ripgrepArgs({ ...base, mode: 'content' })).toEqual([
+      '--no-heading',
+      '--line-number',
+      '--with-filename',
+      '--color',
+      'never',
+      '--path-separator',
+      '/',
+      '--hidden',
+      '--glob',
+      '!.git',
+      '--max-count',
+      '200',
+      '--',
+      'alpha',
+      '.',
+    ]);
+  });
+
+  it('swaps the mode flag per mode', () => {
+    const files = ripgrepArgs({ ...base, mode: 'files' });
+    expect(files).toContain('--files-with-matches');
+    expect(files).not.toContain('--count');
+    expect(files).not.toContain('--max-count');
+
+    const count = ripgrepArgs({ ...base, mode: 'count' });
+    expect(count).toContain('--count');
+    expect(count).not.toContain('--files-with-matches');
+    // A count must stay exact, so it is not capped per file.
+    expect(count).not.toContain('--max-count');
+  });
+
+  it('adds --ignore-case and --glob only when asked', () => {
+    const plain = ripgrepArgs({ ...base, mode: 'content' });
+    expect(plain).not.toContain('--ignore-case');
+
+    const insensitive = ripgrepArgs({ ...base, mode: 'content', caseSensitive: false });
+    expect(insensitive).toContain('--ignore-case');
+
+    const filtered = ripgrepArgs({ ...base, mode: 'content', glob: '**/*.ts' });
+    expect(filtered[filtered.indexOf('--glob') + 1]).toBe('!.git');
+    expect(filtered[filtered.indexOf('**/*.ts') - 1]).toBe('--glob');
+  });
+
+  it('searches hidden paths but never the VCS directory', () => {
+    for (const mode of ['content', 'files', 'count'] as const) {
+      const args = ripgrepArgs({ ...base, mode });
+      expect(args).toContain('--hidden');
+      expect(args[args.indexOf('--glob') + 1]).toBe('!.git');
+      expect(args).not.toContain('--no-ignore');
+    }
+  });
+});
+
+describe('grep through ripgrep', () => {
+  it.runIf(rgPath !== null)('returns the same shapes as the fallback', async () => {
+    await mkdir(join(root, 'nested'), { recursive: true });
+    await writeFile(join(root, 'nested', 'a.txt'), 'alpha' + LF + 'beta' + LF);
+    const content = await executeTool(
+      'grep',
+      { pattern: 'beta' },
+      context(),
+      createToolSessionState(),
+      rgDeps,
+    );
+    expect(content.isError).toBe(false);
+    expect(content.output).toBe('nested/a.txt:2: beta');
+
+    const files = await executeTool(
+      'grep',
+      { pattern: 'beta', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      rgDeps,
+    );
+    expect(files.isError).toBe(false);
+    expect(files.output).toBe('nested/a.txt');
+
+    const count = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'count' },
+      context(),
+      createToolSessionState(),
+      rgDeps,
+    );
+    expect(count.isError).toBe(false);
+    expect(count.output).toBe('nested/a.txt:1');
+
+    const empty = await executeTool(
+      'grep',
+      { pattern: 'zzz' },
+      context(),
+      createToolSessionState(),
+      rgDeps,
+    );
+    expect(empty.isError).toBe(false);
+    expect(empty.output).toBe('no matches for zzz');
+  });
+
+  it.runIf(rgPath !== null)(
+    'surfaces the ripgrep error line for a pattern it rejects',
+    async () => {
+      await writeFile(join(root, 'a.txt'), 'ab' + LF);
+      // Valid for the JavaScript engine, unsupported by ripgrep's regex engine.
+      const result = await executeTool(
+        'grep',
+        { pattern: '(?<=a)b' },
+        context(),
+        createToolSessionState(),
+        rgDeps,
+      );
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('regex parse error');
+    },
+  );
+
+  it.runIf(rgPath !== null)('searches tracked dot directories', async () => {
+    await mkdir(join(root, '.github', 'workflows'), { recursive: true });
+    await writeFile(join(root, '.github', 'workflows', 'ci.yml'), 'run: alpha' + LF);
+    const result = await executeTool(
+      'grep',
+      { pattern: 'alpha', mode: 'files' },
+      context(),
+      createToolSessionState(),
+      rgDeps,
+    );
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe('.github/workflows/ci.yml');
   });
 });
 

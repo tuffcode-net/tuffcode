@@ -129,11 +129,17 @@ export const TOOL_SCHEMAS: readonly ToolSchema[] = [
   {
     name: 'grep',
     description:
-      'Search file contents with a regular expression. Returns path, line number, and matching line. Results are capped at 200.',
+      'Search file contents with a regular expression. Respects .gitignore. Returns matching lines, one path per file with a match, or a per-file count. Results are capped at 200.',
     parameters: {
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'Regular expression to search for.' },
+        mode: {
+          type: 'string',
+          description:
+            'content (default) returns path:line: text, files returns one path per file with a match, count returns path:count.',
+          default: 'content',
+        },
         path: { type: 'string', description: 'File or directory to search.' },
         glob: { type: 'string', description: 'Restrict files by glob, such as **/*.ts.' },
         case_sensitive: {
