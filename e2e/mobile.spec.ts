@@ -118,9 +118,16 @@ async function statusOf(page: Page): Promise<string> {
 async function pair(page: Page): Promise<void> {
   const code = await createCode();
   await page.goto(served('/pair?code=' + code), { waitUntil: 'domcontentloaded' });
-  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
-    timeout: 20_000,
-  });
+  try {
+    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+      timeout: 20_000,
+    });
+  } catch (error) {
+    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+    throw new Error(
+      'pairing did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
+    );
+  }
 }
 
 test('serves the shell with a linked, valid manifest', async ({ page }) => {
@@ -155,9 +162,16 @@ test('pairs a phone, registers the worker and drives a turn', async ({ page }) =
   await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
     waitUntil: 'domcontentloaded',
   });
-  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
-    timeout: 20_000,
-  });
+  try {
+    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+      timeout: 20_000,
+    });
+  } catch (error) {
+    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+    throw new Error(
+      'deep link did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
+    );
+  }
   const input = page.getByTestId('composer-input');
   await expect(input).toBeEnabled({ timeout: 20_000 });
   await input.fill('Say hello');
@@ -173,9 +187,16 @@ test('stops a running turn from the phone', async ({ page }) => {
   await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
     waitUntil: 'domcontentloaded',
   });
-  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
-    timeout: 20_000,
-  });
+  try {
+    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+      timeout: 20_000,
+    });
+  } catch (error) {
+    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+    throw new Error(
+      'deep link did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
+    );
+  }
   const input = page.getByTestId('composer-input');
   await expect(input).toBeEnabled({ timeout: 20_000 });
   await input.fill('SLOW please count');
