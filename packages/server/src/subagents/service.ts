@@ -863,7 +863,10 @@ export function createSubagents(deps: SubagentDeps): Subagents {
           return;
         }
         if (run.cancelled) {
-          finish(childId, 'cancelled', result.text);
+          // An aborted turn often returns no text. A cancelled child must still carry a
+          // reason the parent and the UI can show, so fall back to the stop reason.
+          const stopped = result.text.trim();
+          finish(childId, 'cancelled', stopped.length > 0 ? stopped : 'cancelled by the parent');
           return;
         }
         if (result.status !== 'complete') {

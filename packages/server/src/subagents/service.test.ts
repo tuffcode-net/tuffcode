@@ -532,6 +532,22 @@ describe('subagent service', () => {
     }
   });
 
+  it('keeps a reason on a child cancelled while its turn ran', async () => {
+    const harness = createHarness();
+    try {
+      harness.ports.block = true;
+      const childId = await spawn(harness, 'explorer');
+      await until(() => harness.ports.turns.length === 1);
+      await harness.subagents.cancel(childId);
+      const view = await harness.subagents.awaitChild(childId);
+      expect(view.status).toBe('cancelled');
+      // An aborted turn can return no text; the stop reason must still be stored.
+      expect((view.summary ?? '').length).toBeGreaterThan(0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it('cancels a running child and interrupts its session', async () => {
     const harness = createHarness();
     try {
