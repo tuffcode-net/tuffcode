@@ -11,6 +11,7 @@ import {
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   SquareTerminal,
   UserRound,
   Wrench,
@@ -34,6 +35,7 @@ import { NotificationsSection } from './notifications-section';
 import { PermissionsSection } from './permissions-section';
 import { PluginsSettingsSection } from './plugins-settings-section';
 import { ProvidersSection } from './providers-section';
+import { RemoteSection } from './remote-section';
 import { TerminalSection } from './terminal-section';
 import { UpdatesSection } from './updates-section';
 import { YourTuffcodeSection } from './your-tuffcode-section';
@@ -47,6 +49,7 @@ const SECTION_ICON: Record<SettingsSection, LucideIcon> = {
   plugins: Plug,
   agents: Wrench,
   permissions: ShieldCheck,
+  remote: Smartphone,
   terminal: SquareTerminal,
   updates: RefreshCw,
   diagnostics: Activity,
@@ -77,6 +80,8 @@ function renderSection(section: SettingsSection) {
       return <AgentsSection />;
     case 'permissions':
       return <PermissionsSection />;
+    case 'remote':
+      return <RemoteSection />;
     case 'terminal':
       return <TerminalSection />;
     case 'updates':

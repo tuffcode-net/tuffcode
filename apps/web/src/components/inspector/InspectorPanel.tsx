@@ -84,14 +84,14 @@ export function InspectorPanel({
         data-testid="inspector-header"
         role="tablist"
         aria-label="Panels"
-        className="flex h-[var(--row-height)] shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-1.5"
+        className="flex h-12 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-1.5 md:h-[var(--row-height)]"
       >
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
           {tabs.map((tab) => (
             <div
               key={tab}
               className={cn(
-                'group flex h-7 shrink-0 items-center rounded-md text-xs transition-colors',
+                'group flex h-11 shrink-0 items-center rounded-md text-xs transition-colors md:h-7',
                 tab === active ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
               )}
             >
@@ -101,7 +101,7 @@ export function InspectorPanel({
                 aria-selected={tab === active}
                 data-testid={`inspector-tab-${tab}`}
                 onClick={() => onSelect(tab)}
-                className="h-7 pl-2 pr-1"
+                className="h-11 pl-2 pr-1 md:h-7"
               >
                 {INSPECTOR_TAB_LABEL[tab]}
               </button>
@@ -110,9 +110,9 @@ export function InspectorPanel({
                 aria-label={`Close ${INSPECTOR_TAB_LABEL[tab]}`}
                 data-testid={`inspector-tab-close-${tab}`}
                 onClick={() => onCloseTab(tab)}
-                className="mr-1 flex size-4 items-center justify-center rounded-sm opacity-60 hover:bg-background/60 hover:opacity-100"
+                className="mr-1 flex size-11 items-center justify-center rounded-sm opacity-60 hover:bg-background/60 hover:opacity-100 md:size-4"
               >
-                <X className="size-3" strokeWidth={2} />
+                <X className="size-4 md:size-3" strokeWidth={2} />
               </button>
             </div>
           ))}
@@ -121,7 +121,7 @@ export function InspectorPanel({
           icon={PanelRightClose}
           label="Close panels"
           size="sm"
-          className="shrink-0"
+          className="size-11 shrink-0 md:size-8"
           data-testid="inspector-collapse"
           onClick={onCollapse}
         />

@@ -5,6 +5,7 @@
 export const SETTINGS_SECTIONS = [
   'appearance',
   'models',
+  'remote',
   'your-tuffcode',
   'capabilities',
   'notifications',
@@ -23,6 +24,7 @@ export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 export const SETTINGS_SECTION_LABEL: Record<SettingsSection, string> = {
   appearance: 'Appearance',
   models: 'Models',
+  remote: 'Remote access',
   'your-tuffcode': 'Your Tuffcode',
   capabilities: 'Capabilities',
   notifications: 'Notifications',

@@ -11,6 +11,7 @@ describe('settings sections', () => {
     expect(SETTINGS_SECTIONS).toEqual([
       'appearance',
       'models',
+      'remote',
       'your-tuffcode',
       'capabilities',
       'notifications',
@@ -29,6 +30,7 @@ describe('settings sections', () => {
     expect(SETTINGS_SECTIONS.map((id) => SETTINGS_SECTION_LABEL[id])).toEqual([
       'Appearance',
       'Models',
+      'Remote access',
       'Your Tuffcode',
       'Capabilities',
       'Notifications',

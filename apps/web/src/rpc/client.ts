@@ -29,6 +29,12 @@ import type { ConnectionStatus } from '../types';
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const RECONNECT_BASE_MS = 500;
 export const RECONNECT_MAX_MS = 10_000;
+/**
+ * A socket can stay "open" after the network is gone: the browser only notices on the
+ * next write, and an idle phone writes nothing. A health probe every interval, and a
+ * reset when one goes unanswered for a full interval, makes the loss visible.
+ */
+export const HEARTBEAT_MS = 8_000;
 export const RECONNECT_JITTER_RATIO = 0.2;
 /** Upper bound on `threads.events` pages one replay drains, so a bug cannot spin. */
 export const REPLAY_MAX_PAGES = 200;
@@ -81,7 +87,9 @@ export interface EventSink {
 
 export interface RpcClientOptions {
   url: string;
-  token: string;
+  /** Desktop bearer token. A browser omits it and authenticates the upgrade with
+   * the session cookie the served origin set, so no subprotocol is requested. */
+  token?: string;
   socketFactory?: RpcSocketFactory;
   requestTimeoutMs?: number;
   jitter?: () => number;
@@ -128,6 +136,9 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
     logger = console,
   } = options;
 
+  const protocols =
+    token === undefined || token.length === 0 ? [] : [`tuffcode.bearer.${token}`];
+
   const eventListeners = new Set<(event: ServerEvent) => void>();
   const statusListeners = new Set<(status: ConnectionStatus) => void>();
   const pending = new Map<string, PendingRequest>();
@@ -137,6 +148,8 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
   let attempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let closedByUser = false;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let heartbeatInFlight = false;
 
   function emitStatus(next: ConnectionStatus): void {
     status = next;
@@ -296,7 +309,7 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
 
     let next: RpcSocket;
     try {
-      next = socketFactory(url, [`tuffcode.bearer.${token}`]);
+      next = socketFactory(url, protocols);
     } catch (error) {
       logger.warn('[rpc] Could not create the WebSocket.', error);
       emitStatus('closed');
@@ -310,6 +323,7 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
       attempt = 0;
       emitStatus('open');
       sendPending();
+      startHeartbeat();
     };
 
     next.onmessage = (event) => {
@@ -321,6 +335,7 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
     };
 
     next.onclose = () => {
+      stopHeartbeat();
       if (socket === next) socket = null;
       if (closedByUser) {
         emitStatus('closed');
@@ -330,6 +345,58 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
       emitStatus('closed');
       scheduleReconnect();
     };
+  }
+
+  /**
+   * Drops the current socket without waiting for its close event. Handlers are cleared
+   * first so a late onclose cannot schedule a second reconnect, and pending requests are
+   * rejected so their callers see the loss instead of a 30 second timeout.
+   */
+  function resetConnection(): void {
+    if (closedByUser) return;
+    stopHeartbeat();
+    const current = socket;
+    socket = null;
+    if (current) {
+      current.onopen = null;
+      current.onmessage = null;
+      current.onerror = null;
+      current.onclose = null;
+      try {
+        current.close();
+      } catch {
+        // The socket was already gone.
+      }
+    }
+    settlePending(true);
+    emitStatus('closed');
+    scheduleReconnect();
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeat !== null) clearInterval(heartbeat);
+    heartbeat = null;
+    heartbeatInFlight = false;
+  }
+
+  function startHeartbeat(): void {
+    stopHeartbeat();
+    heartbeat = setInterval(() => {
+      if (status !== 'open') return;
+      if (heartbeatInFlight) {
+        resetConnection();
+        return;
+      }
+      heartbeatInFlight = true;
+      // Only an answer clears the flag. A rejected or timed out probe means the socket
+      // is silent, so the next tick resets it instead of sending another one.
+      void request('app.health', {}).then(
+        () => {
+          heartbeatInFlight = false;
+        },
+        () => undefined,
+      );
+    }, HEARTBEAT_MS);
   }
 
   function request<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> {
@@ -390,6 +457,7 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
 
   function close(): void {
     closedByUser = true;
+    stopHeartbeat();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;

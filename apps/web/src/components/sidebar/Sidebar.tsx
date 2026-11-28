@@ -24,7 +24,7 @@ import {
   writeCollapsedProjects,
 } from './sidebar-model';
 
-export function Sidebar() {
+export function Sidebar({ phone = false }: { phone?: boolean }) {
   const projects = useAppStore((state) => state.projects);
   const threadsById = useAppStore((state) => state.threads);
   const activeThreadId = useAppStore((state) => state.activeThreadId);
@@ -55,7 +55,9 @@ export function Sidebar() {
   );
   const isCollapsed = useCallback((projectId: string) => collapsed.has(projectId), [collapsed]);
   const items = useMemo(() => buildSidebarItems(groups, isCollapsed), [groups, isCollapsed]);
-  const virtual = needsVirtualization(groups);
+  // The virtualizer positions rows from the desktop row heights, so the phone
+  // drawer renders the whole list instead of misplacing taller rows.
+  const virtual = !phone && needsVirtualization(groups);
   /** New chat preselects the project of the open thread, else the most recent project. */
   const newChatProjectId =
     (activeThreadId === null ? undefined : threadsById[activeThreadId]?.projectId) ?? projects[0]?.id ?? null;
@@ -245,7 +247,7 @@ export function Sidebar() {
           data-testid="sidebar-needs"
           aria-current={onNeeds ? 'page' : undefined}
           className={cn(
-            'flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150',
+            'flex h-11 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 md:h-8',
             onNeeds
               ? 'bg-sidebar-row-selected text-sidebar-foreground'
               : 'text-sidebar-foreground hover:bg-sidebar-row-hover',
@@ -276,7 +278,7 @@ export function Sidebar() {
           data-testid="sidebar-plugins"
           aria-current={onPlugins ? 'page' : undefined}
           className={cn(
-            'flex h-8 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150',
+            'flex h-11 items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 md:h-8',
             onPlugins
               ? 'bg-sidebar-row-selected text-sidebar-foreground'
               : 'text-sidebar-foreground hover:bg-sidebar-row-hover',
@@ -294,7 +296,7 @@ export function Sidebar() {
           data-testid="sidebar-add-project"
           variant="ghost"
           size="sm"
-          className="w-full justify-start text-sidebar-muted-foreground"
+          className="h-11 w-full justify-start text-sidebar-muted-foreground md:h-8"
           disabled={adding}
           onClick={addProject}
         >
@@ -342,7 +344,7 @@ function NavButton({
       data-testid={testId}
       disabled={disabled}
       onClick={onClick}
-      className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm text-sidebar-foreground transition-colors duration-150 hover:bg-sidebar-row-hover disabled:opacity-50"
+      className="flex h-11 items-center gap-2 rounded-md px-2 text-left text-sm text-sidebar-foreground transition-colors duration-150 hover:bg-sidebar-row-hover disabled:opacity-50 md:h-8"
     >
       <Icon aria-hidden="true" strokeWidth={1.75} className="size-4 shrink-0 text-sidebar-muted-foreground" />
       <span className="flex-1">{label}</span>
