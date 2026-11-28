@@ -9,6 +9,10 @@ const MAX_PATCH_CHARS = 120_000;
  * work. The worker commits per its brief, so the committed range is the normal case;
  * the working-tree diff is included so a dirty checkout is never mistaken for an
  * empty task.
+ *
+ * A council task that started from a temporary integration branch records the merge
+ * commit as its base, so the base may be a commit id rather than a branch name. The
+ * fallback below then diffs against that commit directly.
  */
 export async function changesForThread(repos: Repos, threadId: string): Promise<TaskChanges> {
   const { thread, worktreePath } = requireWorktree(repos, threadId);

@@ -402,6 +402,39 @@ describe('app store subagents', () => {
     expect(store.getState().subagents['child-1']).toBeUndefined();
     expect(store.getState().subagentPane).toEqual({ open: false, activeChildId: null });
   });
+
+  it('seeds questions from a reload without clobbering one that arrived by event', () => {
+    const store = createAppStore();
+    store.getState().subagentQuestion({
+      childId: 'child-1',
+      threadId: 'thread-1',
+      questionId: 'sq_live',
+      text: 'Which file should I change?',
+    });
+    const live = store.getState().questions['sq_live'];
+
+    store.getState().mergeSubagentQuestions([
+      {
+        questionId: 'sq_live',
+        childId: 'child-1',
+        threadId: 'thread-1',
+        text: 'stale copy from the server',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+      {
+        questionId: 'sq_seeded',
+        childId: 'child-2',
+        threadId: 'thread-1',
+        text: 'Seeded after reload',
+        createdAt: '2026-01-01T00:00:01.000Z',
+      },
+    ]);
+
+    expect(store.getState().questions['sq_live']).toBe(live);
+    expect(store.getState().questions['sq_live']?.text).toBe('Which file should I change?');
+    expect(store.getState().questions['sq_seeded']?.childId).toBe('child-2');
+    expect(store.getState().questions['sq_seeded']?.text).toBe('Seeded after reload');
+  });
 });
 
 describe('mergeSubagentView', () => {

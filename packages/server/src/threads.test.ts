@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { DEFAULT_CAPABILITIES } from '@tuffcode/contracts';
 import { isInside } from '@tuffcode/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readStoredAttachment, storeAttachmentBytes } from './attachments/store.js';
 import { addProject } from './projects.js';
 import {
   addTestProvider,
@@ -11,7 +12,14 @@ import {
   initRepo,
   type TestContext,
 } from './test-support.js';
-import { createThread, deleteThread, updateThread } from './threads.js';
+import {
+  COMPACT_KEEP_MESSAGES,
+  clearThread,
+  compactThread,
+  createThread,
+  deleteThread,
+  updateThread,
+} from './threads.js';
 
 describe('threads service', () => {
   let ctx: TestContext;
@@ -184,5 +192,81 @@ describe('threads service', () => {
     expect(existsSync(worktreePath)).toBe(false);
     expect(existsSync(join(repo, 'README.md'))).toBe(true);
     expect(ctx.repos.threads.get(folderThread.id)).toBeDefined();
+  });
+
+  it('clears a thread and deletes attachment bytes no other message uses', async () => {
+    const project = await addProject(ctx.repos, repo);
+    const thread = await createThread(ctx.repos, {
+      projectId: project.id,
+      providerId: 'prv_test',
+      modelId: 'model-x',
+      executionMode: 'work',
+      permissionMode: 'ask',
+      workspace: 'folder',
+    });
+    const other = await createThread(ctx.repos, {
+      projectId: project.id,
+      providerId: 'prv_test',
+      modelId: 'model-x',
+      executionMode: 'work',
+      permissionMode: 'ask',
+      workspace: 'folder',
+    });
+    const shared = await storeAttachmentBytes('AAAA', 'image/png');
+    const only = await storeAttachmentBytes('BBBB', 'image/png');
+    const createdAt = new Date().toISOString();
+    ctx.repos.messages.add({
+      id: 'msg_clear',
+      threadId: thread.id,
+      role: 'user',
+      content: 'two images',
+      attachments: [
+        { name: 'shared.png', id: shared, mimeType: 'image/png' },
+        { name: 'only.png', id: only, mimeType: 'image/png' },
+      ],
+      createdAt,
+    });
+    ctx.repos.messages.add({
+      id: 'msg_other',
+      threadId: other.id,
+      role: 'user',
+      content: 'same image',
+      attachments: [{ name: 'shared.png', id: shared, mimeType: 'image/png' }],
+      createdAt,
+    });
+
+    const result = await clearThread(ctx.repos, thread.id);
+
+    expect(result.messages).toBe(1);
+    expect(await readStoredAttachment(only)).toBeNull();
+    expect(await readStoredAttachment(shared)).not.toBeNull();
+  });
+
+  it('compacts a thread and deletes attachment bytes from folded messages', async () => {
+    const thread = await createTestThread(undefined, 'folder');
+    const id = await storeAttachmentBytes('CCCC', 'image/png');
+    const createdAt = new Date().toISOString();
+    ctx.repos.messages.add({
+      id: 'msg_folded',
+      threadId: thread.id,
+      role: 'user',
+      content: 'old image',
+      attachments: [{ name: 'old.png', id, mimeType: 'image/png' }],
+      createdAt,
+    });
+    for (let index = 0; index < COMPACT_KEEP_MESSAGES; index += 1) {
+      ctx.repos.messages.add({
+        id: `msg_recent_${index}`,
+        threadId: thread.id,
+        role: 'user',
+        content: `recent ${index}`,
+        createdAt: new Date(Date.parse(createdAt) + index + 1).toISOString(),
+      });
+    }
+
+    const result = await compactThread(ctx.repos, thread.id);
+
+    expect(result.removed).toBe(1);
+    expect(await readStoredAttachment(id)).toBeNull();
   });
 });

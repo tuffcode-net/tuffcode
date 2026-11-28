@@ -409,6 +409,70 @@ ALTER TABLE mcp_servers ADD COLUMN auth_header TEXT;
 UPDATE mcp_servers SET auth_mode = 'bearer' WHERE secret_ref IS NOT NULL;
 `;
 
+/**
+ * Round 5: how thoroughly a child worked. Rows from before the column read as null,
+ * which the prompt and the UI treat as the default `normal`.
+ */
+const SUBAGENT_DEPTH_SQL = `
+ALTER TABLE subagents ADD COLUMN depth TEXT;
+`;
+
+/**
+ * Round 6: two-way control. `kind` marks a mailbox row as a plain message, a child's
+ * blocking question or the parent's answer; rows written before this migration read
+ * as `message`. `closed_at` marks a child the parent closed: the status keeps one of
+ * the five existing values, because widening that CHECK would rebuild the table, and
+ * the transcript stays readable after the child is archived.
+ */
+const SUBAGENT_MAILBOX_SQL = `
+ALTER TABLE subagent_messages ADD COLUMN kind TEXT;
+ALTER TABLE subagents ADD COLUMN closed_at TEXT;
+`;
+
+/**
+ * Round 6, PR 7: a child's full final answer lives in its own row, so the bounded
+ * `subagents.summary` never becomes the only copy. `footer_status` keeps the status
+ * the child declared in its footer (`done`, `partial`, `blocked`), which is narrower
+ * than the five-value row status and reads as null for a child that declared none.
+ */
+const SUBAGENT_REPORTS_SQL = `
+CREATE TABLE subagent_reports (
+  id TEXT PRIMARY KEY,
+  child_id TEXT NOT NULL REFERENCES subagents(child_id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_subagent_reports_child ON subagent_reports(child_id, created_at);
+ALTER TABLE subagents ADD COLUMN footer_status TEXT;
+`;
+
+/**
+ * Attachments the user sent with a message, as a JSON array of wire attachments.
+ * Inline image bytes are stored under the app data directory and referenced by id, so
+ * a transcript row stays small and a reload can still show what was attached.
+ */
+const MESSAGE_ATTACHMENTS_SQL = `
+ALTER TABLE messages ADD COLUMN attachments TEXT;
+`;
+
+/**
+ * How many reviewer-driven rework rounds a child has taken. The parent can steer a
+ * child freely, but findings sent back as rework stop at SUBAGENT_REWORK_LIMIT.
+ */
+const SUBAGENT_REWORK_SQL = `
+ALTER TABLE subagents ADD COLUMN rework_round INTEGER NOT NULL DEFAULT 0;
+`;
+
+/**
+ * Round 8: review comment delivery. `delivered_at` records the first turn whose prompt
+ * carried the comment, so it stops repeating without being marked resolved. NULL means
+ * the agent has not been told about it yet; a resolved comment keeps its timestamp so
+ * the two states stay distinguishable.
+ */
+const REVIEW_COMMENT_DELIVERY_SQL = `
+ALTER TABLE review_comments ADD COLUMN delivered_at TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -464,5 +528,35 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 11,
     name: 'mcp-connector-auth',
     sql: MCP_AUTH_SQL,
+  },
+  {
+    version: 12,
+    name: 'subagent-depth',
+    sql: SUBAGENT_DEPTH_SQL,
+  },
+  {
+    version: 13,
+    name: 'subagent-mailbox',
+    sql: SUBAGENT_MAILBOX_SQL,
+  },
+  {
+    version: 14,
+    name: 'subagent-reports',
+    sql: SUBAGENT_REPORTS_SQL,
+  },
+  {
+    version: 15,
+    name: 'message-attachments',
+    sql: MESSAGE_ATTACHMENTS_SQL,
+  },
+  {
+    version: 16,
+    name: 'subagent-rework-round',
+    sql: SUBAGENT_REWORK_SQL,
+  },
+  {
+    version: 17,
+    name: 'review-comment-delivery',
+    sql: REVIEW_COMMENT_DELIVERY_SQL,
   },
 ];

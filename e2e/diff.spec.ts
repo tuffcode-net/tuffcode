@@ -36,4 +36,18 @@ test('diff panel shows the file the mock provider wrote', async ({
   await expect(added).toBeVisible();
   await added.click();
   await expect(panel).toContainText(MOCK_FILE_PATH);
+
+  // A checkpoint snapshots the worktree and becomes a base option.
+  await panel.getByTestId('diff-save-checkpoint').click();
+  await expect(page.getByText('Checkpoint saved.')).toBeVisible();
+  // Saving must not rebase the panel onto the new checkpoint.
+  await expect(panel.getByLabel('Diff base')).toHaveText(/Working tree/);
+
+  await panel.getByLabel('Diff base').click();
+  const savedBase = page.getByRole('option', { name: /Checkpoint/ });
+  await expect(savedBase).toBeVisible();
+  await savedBase.click();
+  // The checkpoint captured the file the mock wrote, so nothing changed since it.
+  await expect(panel.getByText('Nothing changed since this checkpoint.')).toBeVisible();
+  await expect(panel.getByTestId('diff-file')).toHaveCount(0);
 });

@@ -1,14 +1,14 @@
 /**
  * User-authored custom instructions from settings.
  *
- * The text is trimmed, normalized to LF, capped at 2000 tokens, and truncated at a
+ * The text is trimmed, normalized to LF, capped at 4000 tokens, and truncated at a
  * sentence boundary so the block never crowds out the base prompt or ends mid-word.
  * An empty or whitespace-only value returns undefined, so callers omit the section
  * instead of rendering an empty heading.
  */
 import { estimateTokens } from './context';
 
-export const CUSTOM_INSTRUCTION_TOKEN_BUDGET = 2000;
+export const CUSTOM_INSTRUCTION_TOKEN_BUDGET = 4000;
 
 /** The token budget at four characters per token, the same ratio `estimateTokens` uses. */
 const MAX_CUSTOM_INSTRUCTION_CHARS = CUSTOM_INSTRUCTION_TOKEN_BUDGET * 4;

@@ -1,6 +1,7 @@
 import type {
   Goal,
   GoalState,
+  Project,
   ProviderView,
   Review,
   ReviewVerdict,
@@ -9,17 +10,19 @@ import type {
   TaskState,
   Thread,
 } from '@tuffcode/contracts';
-import { newId, type Logger } from '@tuffcode/shared';
+import { newId, worktreesRoot, type Logger } from '@tuffcode/shared';
 import type { Repos, TaskStatePatch } from '../db/repos/index.js';
 import { badRequest, conflict, notFound, RpcError } from '../errors.js';
 import type { EventBus } from '../events.js';
-import { openPullRequest as openPullRequestInRepo, pushThread } from '../git/index.js';
+import { commitThread, openPullRequest as openPullRequestInRepo, pushThread } from '../git/index.js';
 import type { Runner } from '../runner/runner.js';
 import { COUNCIL_CAPS, TERMINAL_GOAL_STATES, TERMINAL_TASK_STATES } from './caps.js';
 import { providerFamily, selectReviewer } from './family.js';
 import { changesForThread } from './git.js';
+import { createIntegrationBranch, type IntegrationBranch } from './integration.js';
 import { parsePlan } from './plan.js';
 import {
+  buildCaptainRevisionBrief,
   buildPlannerPrompt,
   buildReviewPrompt,
   buildRevisionBrief,
@@ -32,10 +35,12 @@ import { deriveTitle } from '../titles.js';
 import { deleteChildThread, provisionChildThread } from './threads.js';
 import type {
   Council,
+  CouncilEscalationAnswer,
   CouncilPorts,
   CouncilStartInput,
   CouncilStatus,
   CouncilPlan,
+  CouncilPlanTaskView,
   PlanTask,
   PullRequest,
   TurnResult,
@@ -57,8 +62,72 @@ interface GoalRun {
   cancelled: boolean;
   childThreads: Set<string>;
   planTasks: Map<string, PlanTask>;
+  /** The one wait slot a plan approval or an escalation answer resolves. */
+  parking: GoalParking;
+  /** True while an escalation answer runs its revision turn outside the dispatch loop. */
+  answering: boolean;
   promise: Promise<void>;
   resolveDone: () => void;
+}
+
+type ParkingKind = 'plan' | 'escalation';
+
+/** What a parked manual goal receives: approval, or plan feedback for the planner. */
+type PlanDecision = { kind: 'approve' } | { kind: 'revise'; feedback: string };
+
+interface ParkingWaiter {
+  resolve(value: unknown): void;
+  reject(error: Error): void;
+}
+
+/**
+ * One wait slot per run, so a goal never busy-waits. The RPC that answers resolves
+ * the slot. A decision that arrives before the run reaches its wait is kept and
+ * consumed by the next park, which closes the race between the state event and the
+ * captain's click. Cancellation and shutdown reject the slot so the run exits.
+ */
+interface GoalParking {
+  park<T>(kind: ParkingKind): Promise<T>;
+  /** True when the decision was delivered, either to a parked run or for the next park. */
+  resume(kind: ParkingKind, value: unknown): boolean;
+  fail(error: Error): void;
+}
+
+function createParking(): GoalParking {
+  let parked: { kind: ParkingKind; waiter: ParkingWaiter } | null = null;
+  let early: { kind: ParkingKind; value: unknown } | null = null;
+  return {
+    park<T>(kind: ParkingKind): Promise<T> {
+      if (parked !== null) throw new Error('council run is already parked');
+      if (early !== null && early.kind === kind) {
+        const value = early.value;
+        early = null;
+        return Promise.resolve(value as T);
+      }
+      const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+      parked = { kind, waiter: { resolve, reject } };
+      return promise as Promise<T>;
+    },
+    resume(kind, value): boolean {
+      const current = parked;
+      if (current !== null) {
+        if (current.kind !== kind) return false;
+        parked = null;
+        current.waiter.resolve(value);
+        return true;
+      }
+      if (early !== null && early.kind !== kind) return false;
+      early = { kind, value };
+      return true;
+    },
+    fail(error): void {
+      early = null;
+      const current = parked;
+      if (current === null) return;
+      parked = null;
+      current.waiter.reject(error);
+    },
+  };
 }
 
 function errorMessage(error: unknown): string {
@@ -90,6 +159,41 @@ function blockedReason(planTask: PlanTask, byTitle: Map<string, Task>): string {
   return `blocked by ${waiting.join(', ')}`;
 }
 
+/**
+ * True when a queued task waits on a captain decision, directly or through other
+ * queued tasks: every dependency either passed or leads to an awaiting-captain task,
+ * and at least one leads there. A fan-in task behind two escalated branches is waiting
+ * too, so it parks with them instead of being terminalized. A dependency that failed,
+ * is blocked, or is missing is not waiting, so the failure path runs.
+ */
+function waitsOnCaptain(
+  planTask: PlanTask,
+  byTitle: Map<string, Task>,
+  planTasks: Map<string, PlanTask>,
+  seen: Set<string> = new Set(),
+): boolean {
+  let waiting = false;
+  for (const title of planTask.dependsOn) {
+    const dependency = byTitle.get(title.toLowerCase());
+    if (dependency === undefined) return false;
+    if (dependency.state === 'passed' || dependency.state === 'merged') continue;
+    if (dependency.state === 'awaiting-captain') {
+      waiting = true;
+      continue;
+    }
+    if (dependency.state === 'queued') {
+      const dependencyPlan = planTasks.get(dependency.id);
+      if (dependencyPlan === undefined || seen.has(dependency.id)) return false;
+      seen.add(dependency.id);
+      if (!waitsOnCaptain(dependencyPlan, byTitle, planTasks, seen)) return false;
+      waiting = true;
+      continue;
+    }
+    return false;
+  }
+  return waiting;
+}
+
 function escalationQuestion(
   planTask: PlanTask,
   verdict: ReviewVerdict,
@@ -111,6 +215,15 @@ function escalationQuestion(
 export interface CouncilModelTarget {
   providerId: string;
   modelId: string;
+}
+
+/**
+ * A resolved role target plus the role's configured reasoning effort. The effort
+ * follows the role's `settings.subagentModels` entry rather than the model that wins,
+ * matching how subagent spawns treat it; null leaves the child on its own default.
+ */
+export interface CouncilRoleTarget extends CouncilModelTarget {
+  effort: string | null;
 }
 
 export interface CouncilModelInput {
@@ -159,6 +272,9 @@ export function createCouncil(deps: CouncilDeps): Council {
     createThread:
       overrides.createThread?.bind(overrides) ??
       ((request) => provisionChildThread(repos, request)),
+    createIntegrationBranch:
+      overrides.createIntegrationBranch?.bind(overrides) ??
+      ((input) => createIntegrationBranch(input)),
     deleteThread:
       overrides.deleteThread?.bind(overrides) ?? ((threadId) => deleteChildThread(repos, threadId)),
     runTurn:
@@ -180,6 +296,19 @@ export function createCouncil(deps: CouncilDeps): Council {
         repos.threads.setPrUrl(threadId, result.url);
         return result;
       }),
+    syncPullRequest:
+      overrides.syncPullRequest?.bind(overrides) ??
+      (async (threadId) => {
+        // A worker told to commit may still leave edits in the tree; the reviewer reads
+        // the local diff, so the PR must be brought level before the next round.
+        try {
+          await commitThread(repos, threadId, 'council: revision');
+        } catch (error) {
+          if (!(error instanceof RpcError) || error.code !== 'conflict') throw error;
+          // Nothing to commit: the worker committed its own change.
+        }
+        await pushThread(repos, threadId);
+      }),
     changesForThread:
       overrides.changesForThread?.bind(overrides) ??
       ((threadId) => changesForThread(repos, threadId)),
@@ -195,6 +324,26 @@ export function createCouncil(deps: CouncilDeps): Council {
     });
   }
 
+  /**
+   * A task change carries its id and new state, so the board refreshes on the event
+   * instead of waiting for its poll. The goal state rides along for the same reason.
+   */
+  function emitTask(goalId: string, task: Task): void {
+    const goal = repos.council.getGoal(goalId);
+    if (goal === undefined) return;
+    bus.emit({
+      kind: 'event',
+      type: 'council.updated',
+      threadId: goal.threadId,
+      payload: {
+        goalId,
+        state: goal.state,
+        taskId: task.id,
+        taskState: task.state,
+      },
+    });
+  }
+
   function requireGoal(goalId: string): Goal {
     const goal = repos.council.getGoal(goalId);
     if (goal === undefined) throw notFound('goal not found');
@@ -207,16 +356,26 @@ export function createCouncil(deps: CouncilDeps): Council {
     return thread;
   }
 
-  /** The provider and model one role runs with, from the live settings and providers. */
+  function requireTask(taskId: string): Task {
+    const task = repos.council.getTask(taskId);
+    if (task === undefined) throw notFound('task not found');
+    return task;
+  }
+
+  /** The provider, model and reasoning effort one role runs with, from live settings. */
   function modelTarget(
     role: 'planner' | 'worker' | 'reviewer',
     thread: Thread,
-  ): CouncilModelTarget {
-    return resolveCouncilModel({
-      choice: repos.settings.get().subagentModels[role],
-      providers: repos.providers.list(),
-      fallback: { providerId: thread.providerId, modelId: thread.modelId },
-    });
+  ): CouncilRoleTarget {
+    const choice = repos.settings.get().subagentModels[role];
+    return {
+      ...resolveCouncilModel({
+        choice,
+        providers: repos.providers.list(),
+        fallback: { providerId: thread.providerId, modelId: thread.modelId },
+      }),
+      effort: choice.effort ?? null,
+    };
   }
 
   /**
@@ -277,7 +436,28 @@ export function createCouncil(deps: CouncilDeps): Council {
     const current = repos.council.getTask(taskId);
     if (current === undefined) return undefined;
     if (TERMINAL_TASK_STATES[current.state] === true && state !== current.state) return current;
-    return repos.council.setTaskState(taskId, state, patch);
+    const next = repos.council.setTaskState(taskId, state, patch);
+    if (next !== undefined && (next.state !== current.state || patch !== undefined)) {
+      emitTask(run.goalId, next);
+    }
+    return next;
+  }
+
+  /**
+   * Moves a task out of a terminal state, which advanceTask refuses. Only a captain
+   * answer uses this: accept, drop and revise all start from `awaiting-captain`.
+   */
+  function reopenTask(
+    run: GoalRun,
+    taskId: string,
+    state: TaskState,
+    patch?: TaskStatePatch,
+  ): Task | undefined {
+    const current = repos.council.getTask(taskId);
+    if (current === undefined) return undefined;
+    const next = repos.council.setTaskState(taskId, state, patch);
+    if (next !== undefined) emitTask(run.goalId, next);
+    return next;
   }
 
   function addGoalMessage(goal: Goal, content: string): void {
@@ -306,18 +486,24 @@ export function createCouncil(deps: CouncilDeps): Council {
   function cancelOpenTasks(goalId: string): void {
     for (const task of repos.council.listTasks(goalId)) {
       if (TERMINAL_TASK_STATES[task.state] === true) continue;
-      repos.council.setTaskState(task.id, 'cancelled');
+      const cancelled = repos.council.setTaskState(task.id, 'cancelled');
+      if (cancelled !== undefined) emitTask(goalId, cancelled);
     }
   }
 
   function failOpenTasks(goalId: string, message: string): void {
     for (const task of repos.council.listTasks(goalId)) {
       if (TERMINAL_TASK_STATES[task.state] === true) continue;
-      repos.council.setTaskState(task.id, 'failed', { error: message });
+      const failed = repos.council.setTaskState(task.id, 'failed', { error: message });
+      if (failed !== undefined) emitTask(goalId, failed);
     }
   }
 
-  async function planGoal(goal: Goal, run: GoalRun): Promise<CouncilPlan> {
+  async function planGoal(
+    goal: Goal,
+    run: GoalRun,
+    revision?: { round: number; feedback: string },
+  ): Promise<CouncilPlan> {
     const thread = requireThread(goal.threadId);
     const project = repos.projects.get(thread.projectId);
     if (project === undefined) throw notFound('project not found');
@@ -332,22 +518,49 @@ export function createCouncil(deps: CouncilDeps): Council {
       executionMode: 'plan',
       permissionMode: 'full-auto',
       baseBranch,
+      effort: plannerModel.effort,
     });
     run.childThreads.add(planner.id);
+    const prompt = buildPlannerPrompt({
+      goal: goal.text,
+      projectName: project.name,
+      projectPath: project.path,
+      baseBranch,
+      ...(revision === undefined ? {} : { revision }),
+    });
+    // One malformed planner reply must not fail the goal: the same planner thread is
+    // asked once more with the validation error, and only a second failure ends it.
+    const attempt = async (text: string): Promise<CouncilPlan | Error> => {
+      try {
+        const { result, detail } = await runChildTurn(planner.id, text, run.controller.signal);
+        if (result.status !== 'complete') throw turnFailure('planner', result, detail);
+        return parsePlan(result.text);
+      } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    };
     try {
-      const { result, detail } = await runChildTurn(
-        planner.id,
-        buildPlannerPrompt({
-          goal: goal.text,
-          projectName: project.name,
-          projectPath: project.path,
-          baseBranch,
-        }),
-        run.controller.signal,
-      );
+      const first = await attempt(prompt);
+      if (!(first instanceof Error)) {
+        return run.cancelled ? { tasks: [], question: null } : first;
+      }
       if (run.cancelled) return { tasks: [], question: null };
-      if (result.status !== 'complete') throw turnFailure('planner', result, detail);
-      return parsePlan(result.text);
+      logger.warn('council planner reply rejected; retrying once', {
+        goalId: goal.id,
+        message: first.message,
+      });
+      const correction = [
+        prompt,
+        '',
+        'CORRECTION',
+        `The previous reply was rejected: ${first.message}`,
+        'Return the same JSON object shape, corrected. No prose.',
+      ].join('\n');
+      const second = await attempt(correction);
+      if (!(second instanceof Error)) {
+        return run.cancelled ? { tasks: [], question: null } : second;
+      }
+      throw new Error(`planner failed twice: ${first.message}; retry: ${second.message}`);
     } finally {
       await disposeChild(run, planner.id);
     }
@@ -370,6 +583,20 @@ export function createCouncil(deps: CouncilDeps): Council {
       });
       run.planTasks.set(task.id, planTask);
     }
+  }
+
+  /**
+   * Retires the previous plan before a revision writes the next one. Nothing has been
+   * dispatched at `awaiting-approval`, so every task is still queued; cancelling the
+   * rows keeps the history instead of deleting work the user may want to read.
+   */
+  function retirePlanTasks(goal: Goal, run: GoalRun): void {
+    for (const task of repos.council.listTasks(goal.id)) {
+      if (TERMINAL_TASK_STATES[task.state] === true) continue;
+      const cancelled = repos.council.setTaskState(task.id, 'cancelled');
+      if (cancelled !== undefined) emitTask(goal.id, cancelled);
+    }
+    run.planTasks.clear();
   }
 
   async function ensurePullRequest(
@@ -424,6 +651,7 @@ export function createCouncil(deps: CouncilDeps): Council {
     workerReport: string,
   ): Promise<void> {
     const goalThread = requireThread(goal.threadId);
+    const reviewerModel = modelTarget('reviewer', goalThread);
     const selection =
       configuredReviewer(goalThread) ??
       selectReviewer({
@@ -450,6 +678,7 @@ export function createCouncil(deps: CouncilDeps): Council {
             executionMode: 'plan',
             permissionMode: 'full-auto',
             baseBranch,
+            effort: reviewerModel.effort,
           });
           reviewThreadId = reviewThread.id;
           run.childThreads.add(reviewThread.id);
@@ -470,7 +699,9 @@ export function createCouncil(deps: CouncilDeps): Council {
         );
         if (run.cancelled) return;
         const verdict = review.status === 'complete' ? parseReviewVerdict(review.text) : 'escalate';
-        round += 1;
+        // A captain revision re-enters this path at the round it escalated on, so the
+        // count stops at the cap instead of running past it.
+        round = Math.min(round + 1, COUNCIL_CAPS.reviewRounds);
         const body =
           review.text.trim().length > 0
             ? review.text
@@ -512,10 +743,91 @@ export function createCouncil(deps: CouncilDeps): Council {
         if (revision.result.status !== 'complete') {
           throw turnFailure('revision', revision.result, revision.detail);
         }
+        await ports.syncPullRequest?.(child.id);
         advanceTask(run, task.id, 'pr-open');
       }
     } finally {
       if (reviewThreadId !== null) await disposeChild(run, reviewThreadId);
+    }
+  }
+
+  /**
+   * Where a task's worktree starts. One dependency means its branch; several are merged
+   * into one temporary base branch first, because a worktree has a single start point.
+   * A task with no dependency starts from the goal's base branch.
+   */
+  async function taskStart(
+    goal: Goal,
+    task: Task,
+    planTask: PlanTask,
+    project: Project,
+    baseBranch: string,
+  ): Promise<{ startRef: string; integration: IntegrationBranch | null }> {
+    const byTitle = new Map(
+      repos.council.listTasks(goal.id).map((row) => [row.title.toLowerCase(), row]),
+    );
+    const branches: string[] = [];
+    for (const title of planTask.dependsOn) {
+      const dependency = byTitle.get(title.toLowerCase());
+      const threadId = dependency?.threadId ?? null;
+      if (threadId === null) continue;
+      const branch = repos.threads.get(threadId)?.branch?.trim() ?? '';
+      if (branch.length > 0) branches.push(branch);
+    }
+    if (branches.length === 0) return { startRef: baseBranch, integration: null };
+    if (branches.length === 1) {
+      return { startRef: branches[0] ?? baseBranch, integration: null };
+    }
+    const integration = await ports.createIntegrationBranch({
+      repoPath: project.path,
+      worktreesRoot: repos.settings.get().worktreeRoot ?? worktreesRoot(),
+      projectId: project.id,
+      taskId: task.id,
+      branches,
+    });
+    return { startRef: integration.branch, integration };
+  }
+
+  /**
+   * Creates the task's child thread. A temporary integration branch is removed as soon
+   * as the worktree exists: the worktree already carries the merged commits, and the
+   * thread row records the merge commit, so nothing needs the branch again.
+   */
+  async function createTaskThread(
+    goal: Goal,
+    task: Task,
+    planTask: PlanTask,
+    project: Project,
+    goalThread: Thread,
+    baseBranch: string,
+  ): Promise<Thread> {
+    const workerModel = modelTarget('worker', goalThread);
+    const { startRef, integration } = await taskStart(goal, task, planTask, project, baseBranch);
+    try {
+      return await ports.createThread({
+        projectId: project.id,
+        parentThreadId: goalThread.id,
+        title: `Council: ${planTask.title}`,
+        providerId: task.authorProvider,
+        modelId: task.authorModel,
+        executionMode: 'work',
+        permissionMode: 'full-auto',
+        baseBranch,
+        ...(startRef === baseBranch ? {} : { startRef }),
+        effort: workerModel.effort,
+      });
+    } finally {
+      if (integration !== null) {
+        try {
+          await integration.cleanup();
+        } catch (error) {
+          logger.warn('council integration branch cleanup failed', {
+            goalId: goal.id,
+            taskId: task.id,
+            message: errorMessage(error),
+          });
+        }
+      }
     }
   }
 
@@ -532,16 +844,7 @@ export function createCouncil(deps: CouncilDeps): Council {
     const baseBranch = goalThread.baseBranch ?? project.defaultBranch;
 
     advanceTask(run, task.id, 'provisioning');
-    const child = await ports.createThread({
-      projectId: project.id,
-      parentThreadId: goalThread.id,
-      title: `Council: ${planTask.title}`,
-      providerId: task.authorProvider,
-      modelId: task.authorModel,
-      executionMode: 'work',
-      permissionMode: 'full-auto',
-      baseBranch,
-    });
+    const child = await createTaskThread(goal, task, planTask, project, goalThread, baseBranch);
     run.childThreads.add(child.id);
     if (run.cancelled) return;
     const running = advanceTask(run, task.id, 'running', { threadId: child.id }) ?? task;
@@ -604,14 +907,27 @@ export function createCouncil(deps: CouncilDeps): Council {
       }
 
       if (inflight.size === 0) {
-        const remaining = repos.council
-          .listTasks(goal.id)
-          .filter((task) => task.state === 'queued');
-        if (remaining.length === 0) break;
+        const tasksNow = repos.council.listTasks(goal.id);
+        const remaining = tasksNow.filter((task) => task.state === 'queued');
         const byRemainingTitle = new Map(
-          repos.council.listTasks(goal.id).map((task) => [task.title.toLowerCase(), task]),
+          tasksNow.map((task) => [task.title.toLowerCase(), task]),
         );
+        // A queued task stays reachable when every dependency either passed or waits on
+        // the captain, directly or through another queued task, so a fan-in task behind
+        // two escalated branches waits with them. A task no answer can revive is dead
+        // and takes the failure path now, so a goal with one broken branch still ends.
+        const waiting: Task[] = [];
+        const dead: Task[] = [];
         for (const task of remaining) {
+          const planTask = run.planTasks.get(task.id);
+          if (planTask === undefined) {
+            dead.push(task);
+            continue;
+          }
+          if (waitsOnCaptain(planTask, byRemainingTitle, run.planTasks)) waiting.push(task);
+          else dead.push(task);
+        }
+        for (const task of dead) {
           const planTask = run.planTasks.get(task.id);
           if (planTask === undefined) {
             advanceTask(run, task.id, 'failed', { error: 'plan metadata is missing' });
@@ -625,12 +941,220 @@ export function createCouncil(deps: CouncilDeps): Council {
             error: blockedReason(planTask, byRemainingTitle),
           });
         }
+        const awaitingCaptain = tasksNow.some((task) => task.state === 'awaiting-captain');
+        // The captain owes an answer while a task waits on one, or while an answer is
+        // already running its revision turn. Otherwise every queued task was dead and
+        // was settled above, so the loop ends instead of parking forever.
+        if (run.answering || waiting.length > 0 || awaitingCaptain) {
+          try {
+            await run.parking.park('escalation');
+          } catch {
+            break;
+          }
+          continue;
+        }
+        if (remaining.length === 0) break;
         continue;
       }
 
       await Promise.race(inflight.values());
     }
     await Promise.allSettled(inflight.values());
+  }
+
+  /**
+   * One more worker turn on the task's existing child thread, then the existing review
+   * path once. The round the review lands on decides the task: passed, or a fresh
+   * escalation capped by `reviewRounds`.
+   */
+  async function reviseTaskForCaptain(
+    goal: Goal,
+    run: GoalRun,
+    task: Task,
+    question: string,
+    feedback: string,
+  ): Promise<void> {
+    const planTask = run.planTasks.get(task.id);
+    if (planTask === undefined) {
+      reopenTask(run, task.id, 'failed', { error: 'plan metadata is missing' });
+      return;
+    }
+    const child = task.threadId === null ? undefined : repos.threads.get(task.threadId);
+    if (child === undefined) {
+      reopenTask(run, task.id, 'failed', { error: 'the task thread is missing' });
+      return;
+    }
+    if (run.cancelled) return;
+    const reopened = reopenTask(run, task.id, 'running') ?? task;
+    const revision = await runChildTurn(
+      child.id,
+      buildCaptainRevisionBrief({ question, feedback }),
+      run.controller.signal,
+    );
+    if (run.cancelled) return;
+    if (revision.result.status !== 'complete') {
+      const message = turnFailure('revision', revision.result, revision.detail).message;
+      reopenTask(run, task.id, 'failed', { error: message });
+      return;
+    }
+    const url = child.prUrl ?? '';
+    try {
+      await reviewTask(
+        goal,
+        run,
+        reopened,
+        planTask,
+        child,
+        { url, number: pullRequestNumber(url) },
+        '',
+      );
+    } catch (error) {
+      if (run.cancelled) return;
+      const message = errorMessage(error);
+      logger.warn('council captain revision failed', {
+        goalId: goal.id,
+        taskId: task.id,
+        message,
+      });
+      reopenTask(run, task.id, 'failed', { error: message });
+    }
+  }
+
+  /**
+   * The captain's answer to one escalation. Accept and drop settle the task at once,
+   * so a dependent either dispatches or fails on the next loop pass. Revise runs its
+   * turn here and only then wakes the parked run, so the loop never reads the task
+   * mid revision.
+   */
+  async function answerEscalation(input: CouncilEscalationAnswer): Promise<void> {
+    const task = requireTask(input.taskId);
+    const goal = requireGoal(task.goalId);
+    if (task.state !== 'awaiting-captain') {
+      throw conflict('task is not awaiting a captain decision');
+    }
+    if (goal.state === 'cancelled') throw conflict('the council goal was cancelled');
+    const escalation = repos.council
+      .listEscalations(task.id)
+      .findLast((row) => row.resolvedAt === null);
+    if (escalation === undefined) throw conflict('task has no open escalation');
+    const feedback = input.feedback?.trim() ?? '';
+    if (input.decision === 'revise' && feedback.length === 0) {
+      throw badRequest('captain feedback is required to revise a task');
+    }
+    const answer = feedback.length === 0 ? input.decision : `${input.decision}: ${feedback}`;
+    repos.council.resolveEscalation(escalation.id, answer, new Date().toISOString());
+
+    const run = runs.get(goal.id);
+    if (input.decision === 'accept') {
+      if (run !== undefined) {
+        reopenTask(run, task.id, 'passed');
+      } else {
+        const passed = repos.council.setTaskState(task.id, 'passed');
+        if (passed !== undefined) emitTask(goal.id, passed);
+      }
+      run?.parking.resume('escalation', undefined);
+      return;
+    }
+    if (input.decision === 'drop') {
+      if (run !== undefined) {
+        reopenTask(run, task.id, 'failed', { error: 'captain dropped the task' });
+      } else {
+        const failed = repos.council.setTaskState(task.id, 'failed', {
+          error: 'captain dropped the task',
+        });
+        if (failed !== undefined) emitTask(goal.id, failed);
+      }
+      run?.parking.resume('escalation', undefined);
+      return;
+    }
+
+    if (run === undefined || TERMINAL_GOAL_STATES[goal.state] === true || run.cancelled) {
+      throw conflict('the council goal is no longer running');
+    }
+    // The revision is a model turn plus a review, so the RPC returns as soon as the
+    // work starts: the run stays parked on `answering` and wakes when it settles. The
+    // state change to `running` happens in the synchronous prefix, before the RPC
+    // answers, so the board never shows a stale awaiting-captain row.
+    run.answering = true;
+    void reviseTaskForCaptain(goal, run, task, escalation.question, feedback)
+      .catch((error) => {
+        if (run.cancelled) return;
+        const message = errorMessage(error);
+        logger.warn('council captain revision failed', {
+          goalId: goal.id,
+          taskId: task.id,
+          message,
+        });
+        reopenTask(run, task.id, 'failed', { error: message });
+      })
+      .finally(() => {
+        run.answering = false;
+        run.parking.resume('escalation', undefined);
+      });
+  }
+
+  function requireParkedGoal(goalId: string): GoalRun {
+    const goal = requireGoal(goalId);
+    const run = runs.get(goalId);
+    if (run === undefined) throw conflict('the council goal is no longer running');
+    if (goal.state !== 'awaiting-approval') {
+      throw conflict('the goal is not waiting for plan approval');
+    }
+    return run;
+  }
+
+  async function approvePlan(goalId: string): Promise<void> {
+    const run = requireParkedGoal(goalId);
+    if (!run.parking.resume('plan', { kind: 'approve' } satisfies PlanDecision)) {
+      throw conflict('the goal is not waiting for plan approval');
+    }
+  }
+
+  async function revisePlan(goalId: string, feedback: string): Promise<void> {
+    const run = requireParkedGoal(goalId);
+    const text = feedback.trim();
+    if (text.length === 0) throw badRequest('plan feedback is required');
+    if (!run.parking.resume('plan', { kind: 'revise', feedback: text } satisfies PlanDecision)) {
+      throw conflict('the goal is not waiting for plan approval');
+    }
+  }
+
+  /**
+   * Waits for a captain to approve a manual plan, re-planning on feedback. The run
+   * stays parked between attempts; the cap ends the goal instead of looping forever.
+   */
+  async function awaitPlanApproval(goal: Goal, run: GoalRun): Promise<boolean> {
+    let revisions = 0;
+    for (;;) {
+      if (run.cancelled) return false;
+      advanceGoal(goal.id, 'awaiting-approval');
+      let decision: PlanDecision;
+      try {
+        decision = await run.parking.park<PlanDecision>('plan');
+      } catch {
+        return false;
+      }
+      if (run.cancelled) return false;
+      if (decision.kind === 'approve') return true;
+      revisions += 1;
+      if (revisions > COUNCIL_CAPS.planRevisions) {
+        throw new Error('plan was revised twice without approval');
+      }
+      advanceGoal(goal.id, 'planning');
+      const revised = await planGoal(goal, run, { round: revisions, feedback: decision.feedback });
+      if (run.cancelled) return false;
+      if (revised.tasks.length === 0) {
+        addGoalMessage(
+          goal,
+          `Council could not plan this goal.\n\n${revised.question ?? 'The planner returned no tasks.'}`,
+        );
+        advanceGoal(goal.id, 'failed');
+        return false;
+      }
+      advanceGoal(goal.id, 'provisioning');
+      retirePlanTasks(goal, run);
+      createTasks(goal, run, revised.tasks);
+    }
   }
 
   function reviewLabel(review: Review, task: Task): string {
@@ -646,8 +1170,7 @@ export function createCouncil(deps: CouncilDeps): Council {
   function summarise(goal: Goal): { state: 'done' | 'failed'; report: string } {
     const tasks = repos.council.listTasks(goal.id);
     const succeeded = tasks.some(
-      (task) =>
-        task.state === 'passed' || task.state === 'merged' || task.state === 'awaiting-captain',
+      (task) => task.state === 'passed' || task.state === 'merged',
     );
     const lines = tasks.map((task) => {
       const thread = task.threadId === null ? undefined : repos.threads.get(task.threadId);
@@ -681,6 +1204,10 @@ export function createCouncil(deps: CouncilDeps): Council {
       advanceGoal(goal.id, 'provisioning');
       createTasks(goal, run, plan.tasks);
       if (run.cancelled) return;
+      if (goal.autonomy === 'manual') {
+        const approved = await awaitPlanApproval(goal, run);
+        if (!approved || run.cancelled) return;
+      }
       advanceGoal(goal.id, 'running');
       await executeTasks(goal, run);
       if (run.cancelled) return;
@@ -738,6 +1265,8 @@ export function createCouncil(deps: CouncilDeps): Council {
       cancelled: false,
       childThreads: new Set(),
       planTasks: new Map(),
+      parking: createParking(),
+      answering: false,
       promise,
       resolveDone: resolve,
     };
@@ -770,6 +1299,7 @@ export function createCouncil(deps: CouncilDeps): Council {
 
     run.cancelled = true;
     run.controller.abort();
+    run.parking.fail(new Error('council goal cancelled'));
     const cancelled = repos.council.setGoalState(goalId, 'cancelled');
     if (cancelled !== undefined) emitGoal(cancelled);
     cancelOpenTasks(goalId);
@@ -787,7 +1317,21 @@ export function createCouncil(deps: CouncilDeps): Council {
   function statusFor(goal: Goal): CouncilStatus {
     const tasks = repos.council.listTasks(goal.id);
     const reviews = tasks.flatMap((task) => repos.council.listReviews(task.id));
-    return { goal, tasks, reviews };
+    const escalations = tasks.flatMap((task) => repos.council.listEscalations(task.id));
+    const run = runs.get(goal.id);
+    const plan: CouncilPlanTaskView[] = [];
+    if (run !== undefined) {
+      for (const [taskId, planTask] of run.planTasks) {
+        plan.push({
+          taskId,
+          title: planTask.title,
+          files: planTask.files,
+          dependsOn: planTask.dependsOn,
+          critical: planTask.critical,
+        });
+      }
+    }
+    return { goal, tasks, reviews, escalations, plan };
   }
 
   function status(goalId: string): CouncilStatus {
@@ -816,5 +1360,15 @@ export function createCouncil(deps: CouncilDeps): Council {
     }
   }
 
-  return { start, cancel, status, latest, awaitGoal, dispose };
+  return {
+    start,
+    cancel,
+    approvePlan,
+    revisePlan,
+    answerEscalation,
+    status,
+    latest,
+    awaitGoal,
+    dispose,
+  };
 }

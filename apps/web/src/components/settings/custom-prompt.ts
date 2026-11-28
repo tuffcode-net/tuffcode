@@ -4,10 +4,10 @@
  * The budget uses the same four-characters-per-token estimate as
  * `@tuffcode/prompt`, so the counter here matches what the server caps.
  */
-import type { SubagentModelChoice, SubagentModels } from '@tuffcode/contracts';
+import type { ReasoningEffort, SubagentModelChoice, SubagentModels } from '@tuffcode/contracts';
 
 export const CUSTOM_INSTRUCTIONS_CHAR_LIMIT = 16000;
-export const CUSTOM_INSTRUCTION_TOKEN_BUDGET = 2000;
+export const CUSTOM_INSTRUCTION_TOKEN_BUDGET = 4000;
 export const CHARS_PER_TOKEN = 4;
 
 /** Below the cap the textarea still shows a warning, so a cut never surprises. */
@@ -79,8 +79,11 @@ export function customPromptBudget(text: string): CustomPromptBudget {
  */
 export const PROMPT_SECTION_ORDER = [
   'base',
+  'plan-mode',
   'about-user',
   'custom-instructions',
+  'project-rules',
+  'review-comments',
   'skills',
   'available-skills',
   'brain-always',
@@ -93,8 +96,11 @@ export type PromptSectionName = (typeof PROMPT_SECTION_ORDER)[number];
 
 export const PROMPT_SECTION_LABEL: Record<PromptSectionName, string> = {
   base: 'Base prompt',
+  'plan-mode': 'Plan mode',
   'about-user': 'About you',
   'custom-instructions': 'Custom instructions',
+  'project-rules': 'Project rules',
+  'review-comments': 'Review comments',
   skills: 'Skills for this message',
   'available-skills': 'Available skills',
   'brain-always': 'Brain always',
@@ -106,8 +112,11 @@ export const PROMPT_SECTION_LABEL: Record<PromptSectionName, string> = {
 /** Segment colours for the total bar; each one is a static class for Tailwind. */
 const PROMPT_SECTION_BAR: Record<PromptSectionName, string> = {
   base: 'bg-primary',
+  'plan-mode': 'bg-warning/60',
   'about-user': 'bg-info/60',
   'custom-instructions': 'bg-info',
+  'project-rules': 'bg-info/40',
+  'review-comments': 'bg-warning/40',
   skills: 'bg-success/70',
   'available-skills': 'bg-success/40',
   'brain-always': 'bg-success',
@@ -179,6 +188,7 @@ function normalizeChoice(choice: SubagentModelChoice): SubagentModelChoice {
   if (providerId !== undefined && providerId.length > 0) next.providerId = providerId;
   if (model !== undefined && model.length > 0) next.model = model;
   if (fallbackModel !== undefined && fallbackModel.length > 0) next.fallbackModel = fallbackModel;
+  if (choice.effort !== undefined && choice.effort !== null) next.effort = choice.effort;
   return next;
 }
 
@@ -226,4 +236,23 @@ export function modelIdFromSelect(value: string | null): string | undefined {
   const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed === INHERIT_MODEL_VALUE) return undefined;
   return trimmed;
+}
+
+/** Effort a subagent type may request; the inherit sentinel keeps the provider default. */
+export const SUBAGENT_EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+export const SUBAGENT_EFFORT_LABEL: Record<(typeof SUBAGENT_EFFORT_VALUES)[number], string> = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+};
+
+export function effortFromSelect(value: string | null): ReasoningEffort | undefined {
+  if (value === null) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed === INHERIT_MODEL_VALUE) return undefined;
+  return SUBAGENT_EFFORT_VALUES.find((level) => level === trimmed);
 }

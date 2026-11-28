@@ -144,6 +144,17 @@ export interface RemoveWorktreeOptions {
 }
 
 /**
+ * Whether a checkout holds work that exists in no commit: a tracked edit, a staged
+ * change, or an untracked file. A git failure counts as work, because a checkout that
+ * cannot be inspected must never be removed.
+ */
+export async function hasUncommittedWork(worktreePath: string): Promise<boolean> {
+  const status = await tryRunGit(['status', '--porcelain'], worktreePath);
+  if (!status.ok) return true;
+  return status.stdout.trim().length > 0;
+}
+
+/**
  * Removes a worktree: `git worktree remove --force`, a filesystem fallback when git
  * refuses (for example after the directory was already partly deleted), then
  * `git worktree prune` so the repository stops listing it.

@@ -12,6 +12,7 @@ import {
   ConnectorEntrySchema,
   DashboardThreadSchema,
   DiffFileSchema,
+  EscalationSchema,
   ExecutionModeSchema,
   GoalAutonomySchema,
   GoalSchema,
@@ -37,6 +38,7 @@ import {
   SeqSchema,
   SkillSchema,
   SubagentMessageSchema,
+  SubagentQuestionViewSchema,
   SubagentSpecSchema,
   SubagentViewSchema,
   TaskSchema,
@@ -149,6 +151,21 @@ const idParam = z.object({ id: IdSchema });
 const threadIdParam = z.object({ threadId: IdSchema });
 const projectIdParam = z.object({ projectId: IdSchema });
 
+/**
+ * One task of the plan the council currently holds in memory. Task rows store the
+ * brief but not the owned files, so a goal waiting for plan approval reads them here.
+ */
+const CouncilPlanTaskSchema = z.object({
+  taskId: IdSchema,
+  title: z.string(),
+  files: z.string().array(),
+  dependsOn: z.string().array(),
+  critical: z.boolean(),
+});
+
+export const EscalationDecisionSchema = z.enum(['accept', 'revise', 'drop']);
+export type EscalationDecision = z.infer<typeof EscalationDecisionSchema>;
+
 export const methods = {
   'app.health': {
     params: EmptyObjectSchema,
@@ -247,7 +264,8 @@ export const methods = {
       text: z.string(),
       attachments: AttachmentSchema.array().optional(),
     }),
-    result: z.object({ turnId: z.string() }),
+    // `queued` marks a send accepted while another turn was live; it runs on settle.
+    result: z.object({ turnId: z.string(), queued: z.boolean().optional() }),
   },
   'threads.interrupt': {
     params: idParam,
@@ -641,6 +659,10 @@ export const methods = {
       goal: GoalSchema,
       tasks: TaskSchema.array(),
       reviews: ReviewSchema.array(),
+      /** Every escalation the goal raised, so a captain sees the open question. */
+      escalations: EscalationSchema.array().optional(),
+      /** The plan held in memory while the goal runs; empty after a restart. */
+      plan: CouncilPlanTaskSchema.array().optional(),
     }),
   },
   'council.latest': {
@@ -651,8 +673,29 @@ export const methods = {
         goal: GoalSchema,
         tasks: TaskSchema.array(),
         reviews: ReviewSchema.array(),
+        escalations: EscalationSchema.array().optional(),
+        plan: CouncilPlanTaskSchema.array().optional(),
       })
       .nullable(),
+  },
+  /** A manual goal left planning: the captain accepts the plan as it stands. */
+  'council.approvePlan': {
+    params: z.object({ goalId: IdSchema }),
+    result: EmptyObjectSchema,
+  },
+  /** A manual goal left planning: the planner runs again with the captain feedback. */
+  'council.revisePlan': {
+    params: z.object({ goalId: IdSchema, feedback: z.string().min(1).max(2000) }),
+    result: EmptyObjectSchema,
+  },
+  /** The captain answers a task escalation: accept it, ask for a revision, or drop it. */
+  'council.answerEscalation': {
+    params: z.object({
+      taskId: IdSchema,
+      decision: EscalationDecisionSchema,
+      feedback: z.string().max(4000).optional(),
+    }),
+    result: EmptyObjectSchema,
   },
   'subagents.spawn': {
     params: z.object({
@@ -675,12 +718,39 @@ export const methods = {
   },
   /** Sends a follow-up to a child: queued while it runs, a new turn once it settled. */
   'subagents.message': {
-    params: z.object({ childId: IdSchema, text: z.string().min(1).max(8000) }),
+    params: z.object({
+      childId: IdSchema,
+      text: z.string().min(1).max(8000),
+      /** Reviewer findings sent back as a rework round; capped per child. */
+      rework: z.boolean().optional(),
+    }),
     result: z.object({ delivered: z.enum(['queued', 'started']) }),
   },
   'subagents.messages': {
     params: z.object({ childId: IdSchema }),
     result: SubagentMessageSchema.array(),
+  },
+  /**
+   * The user answers a child's blocking question while the main agent is idle. The
+   * child's turn resumes with this text, exactly as if the parent had answered.
+   */
+  'subagents.answer': {
+    params: z.object({
+      threadId: IdSchema,
+      questionId: IdSchema,
+      text: z.string().min(1).max(8000),
+    }),
+    result: EmptyObjectSchema,
+  },
+  /** Stops, archives and (when it holds no commits) disposes a child; the transcript stays. */
+  'subagents.close': {
+    params: z.object({ childId: IdSchema }),
+    result: SubagentViewSchema,
+  },
+  /** Open questions of one parent thread, so a reload can still show the answer box. */
+  'subagents.questions': {
+    params: z.object({ threadId: IdSchema }),
+    result: SubagentQuestionViewSchema.array(),
   },
   /** Every subagent across threads, so the sidebar can map child thread ids to child ids. */
   'subagents.listAll': {

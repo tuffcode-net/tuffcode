@@ -29,6 +29,20 @@ describe('estimateContext', () => {
     expect(usage.percent).toBeCloseTo(0.129);
   });
 
+  it('counts an image even when the message has no text', () => {
+    const usage = estimateContext({
+      sections: [],
+      messages: [
+        { content: '', attachments: [{ mimeType: 'image/png', width: 1024, height: 512 }] },
+        { content: '', attachments: [{ mimeType: 'image/png' }] },
+        { content: '', attachments: [{ mimeType: 'text/plain' }] },
+      ],
+    });
+
+    // 1024x512 / 750 rounds up to 700; an image with no size falls back to 1100.
+    expect(usage.segments.at(-1)).toEqual({ name: 'messages', tokens: 700 + 1100 });
+  });
+
   it('keeps the messages segment when the thread has no history', () => {
     const usage = estimateContext({
       sections: [{ name: 'base', tokens: 40 }],

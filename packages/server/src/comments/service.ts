@@ -43,6 +43,9 @@ export function resolveReviewComment(repos: Repos, id: string, resolved: boolean
   if (comment === undefined) throw notFound('comment not found');
   // Ownership: a comment belongs to its thread, so a dangling thread is a mismatch.
   requireThread(repos, comment.threadId);
+  // Reopening puts the comment back in the unsent state, so the next turn carries it
+  // again. Resolving keeps the delivery stamp, which is what separates sent from fixed.
+  if (!resolved) repos.comments.clearDelivered(id);
   const updated = repos.comments.setResolved(id, resolved);
   if (updated === undefined) throw notFound('comment not found');
   return updated;

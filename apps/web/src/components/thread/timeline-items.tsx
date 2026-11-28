@@ -221,9 +221,9 @@ export function UserBubble({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {item.attachments.map((attachment, index) => (
                   <span
-                    key={`${attachment.path}-${index}`}
+                    key={`${attachment.id ?? attachment.path ?? attachment.name}-${index}`}
                     className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs text-muted-foreground"
-                    title={attachment.path}
+                    title={attachment.path ?? attachment.mimeType ?? 'attachment'}
                   >
                     {attachment.name}
                   </span>
@@ -253,10 +253,32 @@ export function UserBubble({
             <Spinner size="sm" label="Sending" />
             Sending
           </span>
+        ) : item.status === 'queued' ? (
+          <span data-testid="user-message-queued" className="text-2xs text-muted-foreground">
+            Queued
+          </span>
         ) : null}
       </div>
     </div>
   );
+}
+
+/**
+ * Assistant prose links leave the app. Only web links are handed over: the desktop
+ * bridge opens the system browser, and in the browser build (no bridge) the link opens
+ * a tab. Every other scheme, and every relative path, stays a dead click, which keeps
+ * `file:`, `javascript:` and custom handlers away from the OS.
+ */
+const EXTERNAL_LINK = /^https?:\/\//i;
+
+export function openExternalLink(href: string): void {
+  if (!EXTERNAL_LINK.test(href)) return;
+  const bridge = typeof window === 'undefined' ? undefined : window.tuffcode;
+  if (bridge !== undefined && typeof bridge.openExternal === 'function') {
+    bridge.openExternal(href);
+    return;
+  }
+  if (typeof window !== 'undefined') window.open(href, '_blank', 'noreferrer');
 }
 
 /** Context the model wrote before reaching for a tool: smaller and narrower. */
@@ -266,7 +288,7 @@ export function ProseText({ block, theme }: { block: ProseBlock; theme: Markdown
       data-testid="assistant-prose"
       className="max-w-[72ch] px-1 text-[13.5px] leading-[1.65] text-foreground [&_p]:my-2 [&_p]:leading-[1.65] [&_p:first-child]:mt-0 [&_p:last-child]:mb-0"
     >
-      <Markdown content={block.text} theme={theme} />
+      <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
       {block.streaming ? <StreamingCaret /> : null}
     </div>
   );
@@ -342,7 +364,7 @@ export function FinalAnswer({ block, theme, threadId, onRetry, onEdit }: FinalAn
         data-testid="assistant-message"
         className="max-w-[var(--chat-content-max-width)] px-1 text-sm leading-6 text-foreground"
       >
-        <Markdown content={block.text} theme={theme} />
+        <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
         {block.streaming ? <StreamingCaret /> : null}
       </div>
 
@@ -854,7 +876,9 @@ export function NoticeRow({ item }: { item: NoticeItem }) {
         'flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs leading-5',
         item.tone === 'error'
           ? 'border-error/40 bg-error-surface text-error-foreground'
-          : 'border-border bg-muted text-muted-foreground',
+          : item.tone === 'warning'
+            ? 'border-warning/40 bg-warning-surface text-warning-foreground'
+            : 'border-border bg-muted text-muted-foreground',
       )}
     >
       <Icon aria-hidden="true" strokeWidth={1.75} className="mt-0.5 size-3.5 shrink-0" />

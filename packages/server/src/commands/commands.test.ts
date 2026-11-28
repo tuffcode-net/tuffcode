@@ -279,6 +279,16 @@ describe('commands.run', () => {
     expect(harness.started).toEqual([
       { threadId: harness.threadId, goal: 'ship the parser', autonomy: 'manual' },
     ]);
+
+    // The slash command and the composer share one mapping: a full auto default
+    // starts the goal without a plan approval gate.
+    ctx.repos.settings.patch({ defaultPermissionMode: 'full-auto' });
+    await harness.run('/council ship the parser again');
+    expect(harness.started.at(-1)).toEqual({
+      threadId: harness.threadId,
+      goal: 'ship the parser again',
+      autonomy: 'auto',
+    });
   });
 
   it('spawns a typed subagent and rejects a bad type', async () => {

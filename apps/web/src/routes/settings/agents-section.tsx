@@ -13,8 +13,11 @@ import {
   SUBAGENT_CONCURRENCY_MAX,
   SUBAGENT_CONCURRENCY_MIN,
   SUBAGENT_DESCRIPTION,
+  SUBAGENT_EFFORT_LABEL,
+  SUBAGENT_EFFORT_VALUES,
   SUBAGENT_LABEL,
   SUBAGENT_TYPES,
+  effortFromSelect,
   modelIdFromSelect,
   modelSelectValue,
   providerIdFromSelect,
@@ -79,6 +82,10 @@ function SubagentModelRow({
     { value: INHERIT_MODEL_VALUE, label: 'No fallback' },
     ...fallbackListed.map((model) => ({ value: model.modelId, label: modelDisplayLabel(model) })),
   ];
+  const effortOptions = [
+    { value: INHERIT_MODEL_VALUE, label: 'Inherit from provider' },
+    ...SUBAGENT_EFFORT_VALUES.map((value) => ({ value, label: SUBAGENT_EFFORT_LABEL[value] })),
+  ];
   const needsProvider = choice.providerId === undefined;
 
   return (
@@ -87,7 +94,7 @@ function SubagentModelRow({
         <span className="text-sm font-medium text-foreground">{SUBAGENT_LABEL[type]}</span>
         <span className="text-2xs text-muted-foreground">{SUBAGENT_DESCRIPTION[type]}</span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <Select
           aria-label={`${SUBAGENT_LABEL[type]} provider`}
           options={providerOptions}
@@ -107,6 +114,12 @@ function SubagentModelRow({
           value={modelSelectValue(choice.fallbackModel)}
           onValueChange={(value) => onChoiceChange({ fallbackModel: modelIdFromSelect(value) })}
           disabled={needsProvider}
+        />
+        <Select
+          aria-label={`${SUBAGENT_LABEL[type]} reasoning effort`}
+          options={effortOptions}
+          value={choice.effort ?? INHERIT_MODEL_VALUE}
+          onValueChange={(value) => onChoiceChange({ effort: effortFromSelect(value) })}
         />
       </div>
     </li>
@@ -206,9 +219,9 @@ export function AgentsSection() {
         <CardHeader>
           <CardTitle>Subagent models</CardTitle>
           <CardDescription>
-            Each subagent type can run on its own provider and model. The fallback runs when the
-            first choice is unavailable; inherit keeps the parent thread's provider and model. Pick
-            a provider to choose a model.
+            Each subagent type can run on its own provider, model and reasoning effort. The
+            fallback runs when the first choice is unavailable; inherit keeps the parent thread's
+            provider and model. Pick a provider to choose a model.
           </CardDescription>
         </CardHeader>
 

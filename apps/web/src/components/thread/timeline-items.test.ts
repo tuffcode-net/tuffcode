@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
-import { StepsRow } from './timeline-items';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { StepsRow, openExternalLink } from './timeline-items';
 import type { ReasoningBlock, StepsBlock, ToolGroupBlock } from './turn-blocks';
 
 const theme = {} as never;
@@ -80,5 +80,55 @@ describe('StepsRow', () => {
     const html = render(steps({ tools: 1, durationMs: null, children: [tools] }));
     expect(html).toContain('Ran 1 tool');
     expect(html).not.toContain('thought for');
+  });
+});
+
+describe('openExternalLink', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('hands a web link to the desktop bridge', () => {
+    const openExternal = vi.fn();
+    vi.stubGlobal('window', { tuffcode: { openExternal }, open: vi.fn() });
+
+    openExternalLink('https://example.com/docs');
+    openExternalLink('http://example.com/plain');
+
+    expect(openExternal.mock.calls).toEqual([
+      ['https://example.com/docs'],
+      ['http://example.com/plain'],
+    ]);
+  });
+
+  it('opens a tab when there is no desktop bridge', () => {
+    const open = vi.fn();
+    vi.stubGlobal('window', { open });
+
+    openExternalLink('https://example.com/docs');
+
+    expect(open).toHaveBeenCalledWith('https://example.com/docs', '_blank', 'noreferrer');
+  });
+
+  it('refuses every non-web target before it reaches the bridge or a window', () => {
+    const openExternal = vi.fn();
+    const open = vi.fn();
+    vi.stubGlobal('window', { tuffcode: { openExternal }, open });
+
+    for (const href of [
+      'file:///C:/Windows/System32/calc.exe',
+      'javascript:alert(1)',
+      'tuffcode://open',
+      'slack://channel',
+      'mailto:help@example.com',
+      '\\\\server\\share\\note.txt',
+      './src/index.ts',
+      '',
+    ]) {
+      openExternalLink(href);
+    }
+
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 });

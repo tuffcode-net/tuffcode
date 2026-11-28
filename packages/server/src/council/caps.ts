@@ -8,6 +8,8 @@ export const COUNCIL_CAPS = {
   tasksPerGoal: 12,
   reviewRounds: 3,
   goalsPerThread: 2,
+  /** A manual plan may be sent back to the planner this many times before it fails. */
+  planRevisions: 2,
 } as const;
 
 /** Goal states that no longer consume a goal slot on the thread. */

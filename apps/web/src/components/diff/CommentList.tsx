@@ -81,6 +81,14 @@ export function CommentList({
               >
                 {comment.body}
               </p>
+              {!comment.resolved && comment.deliveredAt !== null ? (
+                <span
+                  className="self-start rounded-sm border border-border px-1 text-2xs text-muted-foreground"
+                  title="A turn already carried this comment to the agent. It is not repeated."
+                >
+                  Sent
+                </span>
+              ) : null}
             </div>
             <IconButton
               icon={comment.resolved ? Undo2 : Check}

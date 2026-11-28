@@ -56,6 +56,11 @@ export function worktreesRoot(): string {
   return join(localAppDataDir(), 'worktrees');
 }
 
+/** Content-addressed bytes for images and files the user attached to a message. */
+export function attachmentsDir(): string {
+  return join(localAppDataDir(), 'attachments');
+}
+
 export function brainDir(): string {
   return join(tuffcodeHome(), 'brain');
 }

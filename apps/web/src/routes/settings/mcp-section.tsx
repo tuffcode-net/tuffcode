@@ -436,7 +436,7 @@ export function McpSection() {
                 <FormField
                   label="Arguments"
                   htmlFor="mcp-args"
-                  hint="Space separated; one argument per line also works."
+                  hint="Space separated; quote an argument with spaces; one per line also works."
                 >
                   <Textarea
                     id="mcp-args"

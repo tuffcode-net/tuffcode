@@ -5,6 +5,7 @@ export type CouncilTone = 'neutral' | 'primary' | 'info' | 'success' | 'warning'
 export const GOAL_STATES = [
   'intake',
   'planning',
+  'awaiting-approval',
   'provisioning',
   'running',
   'reviewing',
@@ -17,6 +18,7 @@ export const GOAL_STATES = [
 export const GOAL_STATE_LABEL: Record<GoalState, string> = {
   intake: 'Intake',
   planning: 'Planning',
+  'awaiting-approval': 'Awaiting approval',
   provisioning: 'Provisioning',
   running: 'Running',
   reviewing: 'Reviewing',
@@ -29,6 +31,7 @@ export const GOAL_STATE_LABEL: Record<GoalState, string> = {
 export const GOAL_STATE_TONE: Record<GoalState, CouncilTone> = {
   intake: 'neutral',
   planning: 'info',
+  'awaiting-approval': 'warning',
   provisioning: 'info',
   running: 'primary',
   reviewing: 'info',

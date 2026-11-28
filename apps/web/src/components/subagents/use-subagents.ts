@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import type { SubagentMessage, ThreadEventRow } from '@tuffcode/contracts';
+import { useEffect, useMemo, useState } from 'react';
 import { useRpc } from '../../rpc/rpc-context';
 import { isTerminalSubagentStatus, useAppStore, type SubagentChild } from '../../store/app-store';
+import { mergeChildEvents, mergeSubagentMessages } from './subagent-model';
 
 /** The list refresh debounce: a spawn and its settle frame arrive close together. */
 const LIST_REFRESH_MS = 250;
@@ -63,4 +65,65 @@ export function useSubagentClock(children: readonly SubagentChild[]): number {
   }, [running]);
 
   return now;
+}
+
+/**
+ * The child's own timeline: durable rows for its thread plus the live frames the store
+ * already holds. The child thread id arrives with the list row, so a reload that opens
+ * the pane replays the reasoning, tools and answer instead of showing only the task.
+ */
+export function useSubagentEvents(child: SubagentChild): ThreadEventRow[] {
+  const rpc = useRpc();
+  const [persisted, setPersisted] = useState<ThreadEventRow[]>([]);
+  const childThreadId = child.childThreadId;
+
+  useEffect(() => {
+    if (childThreadId === null) {
+      setPersisted([]);
+      return;
+    }
+    let disposed = false;
+    void rpc.request('threads.events', { id: childThreadId, sinceSeq: 0, limit: 1000 }).then(
+      (page) => {
+        if (!disposed) setPersisted(page.events);
+      },
+      // A failed replay leaves the live frames on screen.
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [rpc, childThreadId]);
+
+  return useMemo(() => mergeChildEvents(persisted, child.events), [persisted, child.events]);
+}
+
+/**
+ * Every mailbox row of one child, in both directions and in full: the persisted rows
+ * loaded once per child, merged with the live frames the store already holds. Reading
+ * here is read-only, so opening or closing the pane never touches the child's run.
+ */
+export function useSubagentMessages(child: SubagentChild): SubagentMessage[] {
+  const rpc = useRpc();
+  const [persisted, setPersisted] = useState<SubagentMessage[]>([]);
+
+  useEffect(() => {
+    let disposed = false;
+    setPersisted([]);
+    void rpc.request('subagents.messages', { childId: child.childId }).then(
+      (rows) => {
+        if (!disposed) setPersisted(rows);
+      },
+      // A failed load leaves the live frames on screen; the pane stays usable.
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [rpc, child.childId]);
+
+  return useMemo(
+    () => mergeSubagentMessages(persisted, child.messages),
+    [persisted, child.messages],
+  );
 }
