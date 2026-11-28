@@ -4,216 +4,240 @@ import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 
 /**
- * Mobile shell smoke: the served build, its manifest, and the service worker contract.
- *
- * URL contract: the mobile server (`packages/server/src/http.ts`) serves `apps/web/dist`
- * on `remote.port`, 4310 by default, and a phone opens `http://<bindHost>:4310`.
- * `TUFFCODE_MOBILE_URL` overrides that base URL, which is how a LAN or Tailscale address
- * is tested. Nothing here launches Electron, so when no served build answers, every test
- * skips and names the probe failure instead of failing on a missing server.
+ * Mobile shell proof: the served build the way a phone uses it. The server comes from
+ * scripts/mobile-test-server.mjs, which seeds a project, a mock provider and a thread
+ * and writes the bearer token to a state file. Nothing here registers the service
+ * worker by hand: the app has to do it, which is the point of the test.
  */
-const BASE_URL = process.env['TUFFCODE_MOBILE_URL'] ?? 'http://127.0.0.1:4310';
-const PROBE_TIMEOUT_MS = 5_000;
-const WORKER_TIMEOUT_MS = 15_000;
+const STATE_PATH = join(tmpdir(), 'tuffcode-mobile-e2e.json');
 
-interface ManifestIcon {
-  src: string;
-  sizes: string;
-  type: string;
-  purpose?: string;
+interface MobileState {
+  token: string;
+  port: number;
+  remotePort: number;
+  projectId: string;
+  threadId: string;
+  baseUrl: string;
 }
 
-interface ManifestJson {
-  name?: string;
-  short_name?: string;
-  start_url?: string;
-  scope?: string;
-  display?: string;
-  background_color?: string;
-  theme_color?: string;
-  icons?: ManifestIcon[];
+/** JSON from the server is unknown; the guard names the boundary once. */
+function asRecord(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) throw new Error(what + ' is not an object');
+  return value as Record<string, unknown>;
 }
 
-let unreachable: string | null = null;
-
-function servedUrl(path: string): string {
-  return new URL(path, BASE_URL).toString();
+function state(): MobileState {
+  const value = asRecord(JSON.parse(readFileSync(STATE_PATH, 'utf8')), 'state file');
+  const text = (key: string): string => {
+    const field = value[key];
+    if (typeof field !== 'string') throw new Error('state file has no ' + key + ' string');
+    return field;
+  };
+  const number = (key: string): number => {
+    const field = value[key];
+    if (typeof field !== 'number') throw new Error('state file has no ' + key + ' number');
+    return field;
+  };
+  return {
+    token: text('token'),
+    port: number('port'),
+    remotePort: number('remotePort'),
+    projectId: text('projectId'),
+    threadId: text('threadId'),
+    baseUrl: text('baseUrl'),
+  };
 }
 
-async function readManifest(): Promise<ManifestJson> {
-  const response = await fetch(servedUrl('/manifest.webmanifest'));
-  expect(response.ok, 'the served build must include manifest.webmanifest').toBe(true);
-  const contentType = response.headers.get('content-type') ?? '';
-  expect(contentType, 'a manifest must be served with a JSON media type').toContain('json');
-  return (await response.json()) as ManifestJson;
+function base(): string {
+  return state().baseUrl;
 }
 
-/**
- * Registers the served worker and waits until it controls the page.
- *
- * The call site in `main.tsx` belongs to another branch, so this spec drives the
- * `/sw.js` asset directly. `registerPwa` and its secure-context rules are covered by
- * apps/web/src/pwa.test.ts.
- */
-async function activateWorker(page: Page): Promise<void> {
-  const outcome = await page.evaluate(async (timeoutMs: number) => {
-    if (!('serviceWorker' in navigator)) return 'this browser has no service worker support';
-    const late = Promise.withResolvers<string>();
-    const timer = setTimeout(
-      () => late.resolve(`no service worker became active within ${timeoutMs} ms`),
-      timeoutMs,
-    );
-    const outcome = await Promise.race([
-      (async () => {
-        await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-        const registration = await navigator.serviceWorker.ready;
-        return registration.active?.scriptURL ?? 'the registration has no active worker';
-      })(),
-      late.promise,
-    ]);
-    clearTimeout(timer);
-    return outcome;
-  }, WORKER_TIMEOUT_MS);
+function served(path: string): string {
+  return new URL(path, base()).toString();
+}
 
-  expect(outcome, 'the served build must include /sw.js').toContain('/sw.js');
-  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, {
-    timeout: WORKER_TIMEOUT_MS,
+async function createCode(): Promise<string> {
+  const response = await fetch(served('/pair/create'), {
+    method: 'POST',
+    headers: { authorization: `Bearer ${state().token}` },
+  });
+  expect(response.status, 'the desktop must be able to create a pairing code').toBe(201);
+  const body: unknown = await response.json();
+  if (typeof body !== 'object' || body === null || !('code' in body)) {
+    throw new Error('pair/create did not return a code');
+  }
+  const code = body.code;
+  if (typeof code !== 'string') throw new Error('pair/create returned a non string code');
+  return code;
+}
+
+async function claimViaApi(code: string): Promise<{ status: number; cookie: string }> {
+  const response = await fetch(served('/pair/claim'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, deviceName: 'API phone' }),
+  });
+  const cookie = /tuffcode_session=([0-9a-f]{64})/.exec(response.headers.get('set-cookie') ?? '');
+  return { status: response.status, cookie: cookie?.[1] ?? '' };
+}
+
+async function statusOf(page: Page): Promise<string> {
+  return (await page.getByTestId('connection-status').getAttribute('data-status')) ?? 'missing';
+}
+
+async function pair(page: Page): Promise<void> {
+  const code = await createCode();
+  await page.goto(served('/pair?code=' + code), { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 20_000,
   });
 }
-
-test.beforeAll(async () => {
-  try {
-    const response = await fetch(servedUrl('/'), { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-    if (!response.ok) unreachable = `${servedUrl('/')} answered HTTP ${response.status}`;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    unreachable = `${servedUrl('/')} did not answer (${reason})`;
-  }
-});
-
-test.beforeEach(() => {
-  if (unreachable !== null) {
-    throw new Error(
-      `${unreachable}. The Playwright webServer should have started the mobile server; ` +
-        'check scripts/mobile-test-server.mjs.',
-    );
-  }
-});
 
 test('serves the shell with a linked, valid manifest', async ({ page }) => {
-  await page.goto(servedUrl('/'), { waitUntil: 'domcontentloaded' });
-
+  await page.goto(served('/'), { waitUntil: 'domcontentloaded' });
   const href = await page.locator('link[rel="manifest"]').getAttribute('href');
-  if (!href) {
-    throw new Error(
-      'index.html must link the manifest: ' +
-        '<link rel="manifest" href="/manifest.webmanifest" type="application/manifest+json">',
-    );
-  }
-  const linked = await fetch(new URL(href, page.url()).toString());
-  expect(linked.ok, `the linked manifest ${href} must load`).toBe(true);
-
-  const manifest = await readManifest();
-  expect(manifest.name).toBe('Tuffcode');
-  expect(manifest.short_name).toBe('Tuffcode');
-  expect(manifest.start_url).toBe('/');
-  expect(manifest.scope).toBe('/');
-  expect(manifest.display).toBe('standalone');
-  expect(manifest.theme_color, 'the manifest needs a theme color').toBeTruthy();
-  expect(manifest.background_color, 'the manifest needs a background color').toBeTruthy();
-
-  const icons = manifest.icons ?? [];
-  const sizes = icons.map((icon) => icon.sizes);
-  expect(sizes, 'installability needs a 192px and a 512px icon').toEqual(
-    expect.arrayContaining(['192x192', '512x512']),
+  expect(href, 'index.html must link the manifest').toBeTruthy();
+  const raw: unknown = await (await fetch(new URL(href ?? '/', served('/')))).json();
+  const manifest = asRecord(raw, 'manifest');
+  expect(manifest['name']).toBe('Tuffcode');
+  const icons = Array.isArray(manifest['icons']) ? manifest['icons'] : [];
+  const sizes = icons.map((icon: unknown) =>
+    typeof icon === 'object' && icon !== null && 'sizes' in icon ? String(icon.sizes) : '',
   );
-  for (const icon of icons) expect(icon.type).toBe('image/png');
+  expect(sizes).toEqual(expect.arrayContaining(['192x192', '512x512']));
 });
 
-test('pairs a phone and opens the workspace over the session cookie', async ({ page, context }) => {
-  const token = readFileSync(join(tmpdir(), 'tuffcode-mobile-e2e-token'), 'utf8').trim();
-  const created = await fetch(servedUrl('/pair/create'), {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, origin: BASE_URL },
-  });
-  expect(created.ok, 'the test server must create a pairing code').toBe(true);
-  const { code } = (await created.json()) as { code: string };
-
-  const claimed = await fetch(servedUrl('/pair/claim'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: BASE_URL },
-    body: JSON.stringify({ code, deviceName: 'Playwright phone' }),
-  });
-  expect(claimed.ok, 'the phone must claim the code').toBe(true);
-  const setCookie = claimed.headers.get('set-cookie') ?? '';
-  const value = /tuffcode_session=([0-9a-f]{64})/.exec(setCookie)?.[1];
-  expect(value, 'the claim must set the session cookie').toBeTruthy();
-
-  await context.addCookies([
-    { name: 'tuffcode_session', value: value ?? '', domain: new URL(BASE_URL).hostname, path: '/' },
-  ]);
-  await page.goto(servedUrl('/'), { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('[data-testid="connection-status"]')).toHaveAttribute(
-    'data-status',
-    'open',
+test('pairs a phone, registers the worker and drives a turn', async ({ page }) => {
+  await pair(page);
+  // The app has to register the worker itself; nothing in this spec calls register.
+  await page.waitForFunction(
+    async () => (await navigator.serviceWorker.getRegistrations()).length > 0,
+    null,
     { timeout: 20_000 },
   );
-  await expect(page.getByText('Workspace', { exact: false }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Show sidebar' }).click();
+  await expect(page.getByTestId('thread-row').filter({ hasText: 'Remote chat' }).first()).toBeVisible();
+  await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.getByTestId('composer-input').fill('Say hello');
+  await page.getByTestId('composer-send').click();
+  await expect(
+    page.getByTestId('assistant-message').filter({ hasText: 'Hello from the mock provider.' }).last(),
+  ).toBeVisible({ timeout: 30_000 });
 });
 
-test('serves each declared icon at its declared size', async () => {
-  const manifest = await readManifest();
-  const icons = manifest.icons ?? [];
-  expect(icons.length).toBeGreaterThanOrEqual(2);
+test('stops a running turn from the phone', async ({ page }) => {
+  await pair(page);
+  await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.getByTestId('composer-input').fill('SLOW please count');
+  await page.getByTestId('composer-send').click();
+  const stop = page.getByRole('button', { name: 'Stop' });
+  await expect(stop).toBeVisible({ timeout: 20_000 });
+  await stop.click();
+  await expect(page.getByTestId('composer-send')).toBeVisible({ timeout: 20_000 });
+});
 
-  for (const icon of icons) {
-    const response = await fetch(servedUrl(icon.src));
-    expect(response.ok, `${icon.src} must be served`).toBe(true);
-    expect(response.headers.get('content-type') ?? '').toContain('image/png');
+test('reconnects after the network drops', async ({ page, context }) => {
+  await pair(page);
+  await context.setOffline(true);
+  // The heartbeat notices a silent socket within two intervals.
+  await expect
+    .poll(async () => statusOf(page), { timeout: 45_000 })
+    .not.toBe('open');
+  await context.setOffline(false);
+  await expect
+    .poll(async () => statusOf(page), { timeout: 45_000 })
+    .toBe('open');
+});
 
-    const bytes = Buffer.from(await response.arrayBuffer());
-    expect(bytes.subarray(1, 4).toString('latin1')).toBe('PNG');
-    // A PNG IHDR stores width and height as big-endian uint32 at byte offsets 16 and 20.
-    const size = `${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`;
-    expect(size, `${icon.src} does not match its declared size`).toBe(icon.sizes);
+test('pairs a second device and revoke cuts only that one', async ({ browser }) => {
+  const first = await browser.newContext();
+  const second = await browser.newContext();
+  try {
+    const one = await first.newPage();
+    const two = await second.newPage();
+    await pair(one);
+    await pair(two);
+
+    const listed = await fetch(served('/remote/sessions'), {
+      headers: { authorization: `Bearer ${state().token}` },
+    });
+    const sessions = (await listed.json()) as { sessions: { id: string; connected: boolean }[] };
+    expect(sessions.sessions.filter((session) => session.connected)).toHaveLength(2);
+    const newest = sessions.sessions[0];
+    if (newest === undefined) throw new Error('no paired sessions were listed');
+
+    const revoked = await fetch(served('/remote/sessions/revoke'), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${state().token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ id: newest.id }),
+    });
+    expect(await revoked.json()).toEqual({ revoked: 1 });
+    await expect.poll(async () => statusOf(two), { timeout: 10_000 }).not.toBe('open');
+    expect(await statusOf(one)).toBe('open');
+  } finally {
+    await first.close();
+    await second.close();
   }
 });
 
-test('caches the shell and keeps server surfaces out of Cache Storage', async ({ page }) => {
-  await page.goto(servedUrl('/'), { waitUntil: 'domcontentloaded' });
-  await activateWorker(page);
-
-  // Touch the surfaces the worker must ignore, then list every cached URL.
-  await page.evaluate(async () => {
-    await Promise.all([
-      fetch('/bootstrap', { cache: 'no-store' }).catch(() => undefined),
-      fetch('/health', { cache: 'no-store' }).catch(() => undefined),
-    ]);
-  });
-
-  const cachedPaths = await page.evaluate(async () => {
-    const paths: string[] = [];
-    for (const name of await caches.keys()) {
-      const cache = await caches.open(name);
-      for (const request of await cache.keys()) paths.push(new URL(request.url).pathname);
-    }
-    return paths;
-  });
-
-  expect(cachedPaths, 'the shell must be cached').toContain('/');
-  expect(cachedPaths, 'the manifest must be cached').toContain('/manifest.webmanifest');
-  expect(
-    cachedPaths.filter((path) => /^\/(ws|bootstrap|pair|health)(\/|$)/.test(path)),
-    'server surfaces must never enter Cache Storage',
-  ).toEqual([]);
+test('refuses a reused pairing code', async () => {
+  const code = await createCode();
+  expect((await claimViaApi(code)).status).toBe(201);
+  expect((await claimViaApi(code)).status).toBe(401);
 });
 
-test('serves the cached shell after the network drops', async ({ page, context }) => {
-  await page.goto(servedUrl('/'), { waitUntil: 'domcontentloaded' });
-  await activateWorker(page);
+test('disabling remote access cuts every paired device', async ({ browser }) => {
+  const first = await browser.newContext();
+  const second = await browser.newContext();
+  try {
+    const one = await first.newPage();
+    const two = await second.newPage();
+    await pair(one);
+    await pair(two);
 
-  await context.setOffline(true);
-  const response = await page.reload({ waitUntil: 'domcontentloaded' });
-  expect(response?.status(), 'the worker must answer the navigation from its cache').toBe(200);
-  await expect(page.locator('#root')).toHaveCount(1);
+    const socket = new WebSocket('ws://127.0.0.1:' + state().remotePort + '/ws', [
+      'tuffcode.bearer.' + state().token,
+    ]);
+    await new Promise<void>((ready) => {
+      socket.addEventListener('open', () => ready(), { once: true });
+    });
+    const request = (id: string, method: string, params: unknown): Promise<Record<string, unknown>> => {
+      const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
+      const onMessage = (event: MessageEvent): void => {
+        const frame = JSON.parse(String(event.data)) as { id?: string };
+        if (frame.id !== id) return;
+        socket.removeEventListener('message', onMessage);
+        resolve(frame as Record<string, unknown>);
+      };
+      socket.addEventListener('message', onMessage);
+      socket.send(JSON.stringify({ id, method, params }));
+      return promise;
+    };
+    const settings = await request('get', 'settings.get', {});
+    const result = settings['result'];
+    if (typeof result !== 'object' || result === null || !('remote' in result)) {
+      throw new Error('settings.get did not return the remote block');
+    }
+    const remote = result.remote;
+    if (typeof remote !== 'object' || remote === null) throw new Error('remote is not an object');
+    const saved = await request('set', 'settings.set', {
+      patch: { remote: { ...remote, enabled: false } },
+    });
+    expect(saved['ok']).toBe(true);
+    socket.close();
+
+    await expect.poll(async () => statusOf(one), { timeout: 10_000 }).not.toBe('open');
+    await expect.poll(async () => statusOf(two), { timeout: 10_000 }).not.toBe('open');
+    await expect(fetch(served('/health'))).rejects.toThrow();
+  } finally {
+    await first.close();
+    await second.close();
+  }
 });

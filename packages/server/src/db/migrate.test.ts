@@ -16,12 +16,14 @@ describe('db migrations', () => {
     env = createTempEnv();
     const db = openDb(join(env.root, 'tuffcode.db'));
     try {
-      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      const expected = MIGRATIONS.map((entry) => entry.version);
+      expect(migrate(db)).toEqual(expected);
       expect(migrate(db)).toEqual([]);
 
       const versions = db.prepare('SELECT version FROM schema_migrations').all();
-      expect(versions).toHaveLength(17);
-      expect(versions.map((row) => row['version'])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      expect(versions).toHaveLength(expected.length);
+      expect(versions.map((row) => row['version'])).toEqual(expected);
+      expect(expected.at(-1)).toBe(18);
 
       expect(db.prepare('PRAGMA journal_mode').get()?.['journal_mode']).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1);
@@ -81,8 +83,10 @@ describe('db migrations', () => {
     const db = openDb(join(env.root, 'upgrade.db'));
     try {
       const now = new Date().toISOString();
+      const remoteMigration = MIGRATIONS.find((entry) => entry.name === 'remote-access');
+      if (remoteMigration === undefined) throw new Error('the remote migration is missing');
       // Build the previous schema, then write the rows an installed app already has.
-      for (const migration of MIGRATIONS.filter((entry) => entry.version <= 16)) {
+      for (const migration of MIGRATIONS.filter((entry) => entry.name !== 'remote-access')) {
         db.exec(migration.sql);
         db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
           migration.version,
@@ -102,7 +106,7 @@ describe('db migrations', () => {
         now,
       );
 
-      expect(migrate(db)).toEqual([17]);
+      expect(migrate(db)).toEqual([remoteMigration.version]);
 
       expect(db.prepare('SELECT name FROM projects WHERE id = ?').get('prj_keep')?.['name']).toBe(
         'Keep me',

@@ -332,7 +332,7 @@ describe('http surface', () => {
 
   it('rate limits pairing create and claim', async () => {
     harness = await startHarness({ remote: PAIRING_REMOTE });
-    for (let index = 0; index < 5; index += 1) await createCode(harness);
+    for (let index = 0; index < 20; index += 1) await createCode(harness);
     const limited = await fetch(harness.url('/pair/create'), {
       method: 'POST',
       headers: { authorization: `Bearer ${harness.token}` },

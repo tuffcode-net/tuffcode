@@ -567,7 +567,7 @@ export const MIGRATIONS: readonly Migration[] = [
     sql: SUBAGENT_REWORK_SQL,
   },
   {
-    version: 17,
+    version: 18,
     name: 'remote-access',
     sql: REMOTE_ACCESS_SQL,
   },

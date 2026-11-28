@@ -62,7 +62,9 @@ const IPV4_LOOPBACK = /^127\./;
 const IPV6_MAPPED_LOOPBACK = /^::ffff:127\./i;
 const IPV4_LITERAL = /^\d{1,3}(\.\d{1,3}){3}$/;
 const PAIRING_BODY_LIMIT = 4096;
-const PAIRING_CREATE_LIMIT = 5;
+// Creating a code needs the bearer token, so this bounds abuse rather than guessing;
+// the claim limiter below is the guess boundary and stays tight.
+const PAIRING_CREATE_LIMIT = 20;
 const PAIRING_CLAIM_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
 const INDEX_FILE = 'index.html';
