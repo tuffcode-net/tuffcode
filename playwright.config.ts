@@ -50,7 +50,8 @@ export default defineConfig({
   use: { trace: 'retain-on-failure' },
   webServer: {
     command: 'node scripts/mobile-test-server.mjs',
-    url: 'http://127.0.0.1:' + mobilePort + '/health',
+    // A LAN or Tailscale run binds that address, so the readiness probe follows it.
+    url: mobileBaseUrl + '/health',
     env: { ...process.env, TUFFCODE_MOBILE_PORT: String(mobilePort) },
     reuseExistingServer: false,
     timeout: 120_000,

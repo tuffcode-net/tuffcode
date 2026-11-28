@@ -81,8 +81,13 @@ function served(path: string): string {
   return new URL(path, base()).toString();
 }
 
+/** Desktop actions go to the loopback listener; a LAN peer may not create a code. */
+function desktop(path: string): string {
+  return 'http://127.0.0.1:' + state().port + path;
+}
+
 async function createCode(): Promise<string> {
-  const response = await fetch(served('/pair/create'), {
+  const response = await fetch(desktop('/pair/create'), {
     method: 'POST',
     headers: { authorization: `Bearer ${state().token}` },
   });
@@ -135,11 +140,16 @@ test('serves the shell with a linked, valid manifest', async ({ page }) => {
 test('pairs a phone, registers the worker and drives a turn', async ({ page }) => {
   await pair(page);
   // The app has to register the worker itself; nothing in this spec calls register.
-  await page.waitForFunction(
-    async () => (await navigator.serviceWorker.getRegistrations()).length > 0,
-    null,
-    { timeout: 20_000 },
-  );
+  // A plain HTTP LAN address is not a secure context, so the worker is only expected
+  // there when the origin qualifies (loopback or HTTPS, for example Tailscale).
+  const secure = await page.evaluate(() => window.isSecureContext);
+  if (secure) {
+    await page.waitForFunction(
+      async () => (await navigator.serviceWorker.getRegistrations()).length > 0,
+      null,
+      { timeout: 20_000 },
+    );
+  }
   await page.getByRole('button', { name: 'Show sidebar' }).click();
   await expect(page.getByTestId('thread-row').filter({ hasText: 'Remote chat' }).first()).toBeVisible();
   await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
@@ -177,7 +187,11 @@ test('stops a running turn from the phone', async ({ page }) => {
   await expect(page.getByTestId('composer-send')).toBeVisible({ timeout: 20_000 });
 });
 
-test('reconnects after the network drops', async ({ page, context }) => {
+test('reconnects after the network drops', async ({ page, context, browserName }) => {
+  // WebKit's offline emulation does not stop traffic on an already open socket, so the
+  // heartbeat has nothing to notice there. The missed-probe reset is covered by a fake
+  // timer unit test in apps/web/src/rpc/client.test.ts.
+  test.skip(browserName !== 'chromium', 'WebKit does not cut an open socket offline');
   await pair(page);
   await context.setOffline(true);
   // The heartbeat notices a silent socket within two intervals.
@@ -199,7 +213,7 @@ test('pairs a second device and revoke cuts only that one', async ({ browser }) 
     await pair(one);
     await pair(two);
 
-    const listed = await fetch(served('/remote/sessions'), {
+    const listed = await fetch(desktop('/remote/sessions'), {
       headers: { authorization: `Bearer ${state().token}` },
     });
     const sessions = (await listed.json()) as { sessions: { id: string; connected: boolean }[] };
@@ -207,7 +221,7 @@ test('pairs a second device and revoke cuts only that one', async ({ browser }) 
     const newest = sessions.sessions[0];
     if (newest === undefined) throw new Error('no paired sessions were listed');
 
-    const revoked = await fetch(served('/remote/sessions/revoke'), {
+    const revoked = await fetch(desktop('/remote/sessions/revoke'), {
       method: 'POST',
       headers: {
         authorization: `Bearer ${state().token}`,
