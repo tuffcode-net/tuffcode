@@ -5,13 +5,14 @@ import type {
   SubagentType,
   ToolProfile,
   TurnContext,
+  TurnToolOptions,
 } from '@tuffcode/contracts';
 import {
   SUBAGENT_TOOL_PROFILES,
   SUBAGENT_TYPES,
   buildSubagentMessage,
 } from '@tuffcode/prompt';
-import { allowedToolSchemas, profileOffers, type ToolListOptions } from './tool-policy.js';
+import { allowedToolSchemas, profileOffers } from './tool-policy.js';
 import { toOpenAITools } from './openai/client.js';
 import { toAnthropicTools } from './anthropic/client.js';
 import { tuffcodeToolSpecs } from './claude/tuffcode-tools.js';
@@ -23,7 +24,7 @@ import { tuffcodeToolSpecs } from './claude/tuffcode-tools.js';
  * either tries a tool it cannot call or fails to learn about one it has.
  */
 
-const ALL_SERVER_TOOLS: ToolListOptions = {
+const ALL_SERVER_TOOLS: TurnToolOptions = {
   subagent: true,
   extra: true,
   todo: true,
@@ -80,6 +81,7 @@ const logger: AdapterLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
 const deps: AdapterDeps = {
   logger,
+  env: {},
   resolveCommand: async () => null,
   extraTool: async () => '',
   spawnSubagent: async () => ({ childId: 'c1', status: 'queued' }),
