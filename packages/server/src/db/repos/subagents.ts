@@ -66,6 +66,8 @@ export interface SubagentsRepo {
   create(input: CreateSubagentInput): SubagentRecord;
   get(childId: string): SubagentRecord | undefined;
   listByThread(threadId: string): SubagentRecord[];
+  /** The child row whose own thread this is, or undefined for any other thread. */
+  getByChildThreadId(threadId: string): SubagentRecord | undefined;
   listAll(): SubagentRecord[];
   setRunning(
     childId: string,
@@ -215,6 +217,9 @@ export function createSubagentsRepo(db: DatabaseSync): SubagentsRepo {
   const selectByThread = db.prepare(
     `SELECT ${SELECT_COLUMNS} FROM subagents WHERE thread_id = ? ORDER BY created_at ASC`,
   );
+  const selectByChildThread = db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM subagents WHERE child_thread_id = ? LIMIT 1`,
+  );
   const selectAll = db.prepare(`SELECT ${SELECT_COLUMNS} FROM subagents ORDER BY created_at ASC`);
   const updateRunning = db.prepare(
     'UPDATE subagents SET status = ?, child_thread_id = COALESCE(?, child_thread_id), started_at = COALESCE(started_at, ?), tool_count = COALESCE(tool_count, 0), input_tokens = COALESCE(input_tokens, 0), output_tokens = COALESCE(output_tokens, 0), updated_at = ? WHERE child_id = ?',
@@ -295,6 +300,10 @@ export function createSubagentsRepo(db: DatabaseSync): SubagentsRepo {
     },
     get,
     listByThread: (threadId) => selectByThread.all(threadId).map((row) => mapRecord(asRow(row))),
+    getByChildThreadId: (threadId) => {
+      const row = selectByChildThread.get(threadId);
+      return row === undefined ? undefined : mapRecord(asRow(row));
+    },
     listAll: () => selectAll.all().map((row) => mapRecord(asRow(row))),
     setRunning: (childId, childThreadId, updatedAt) => {
       updateRunning.run('running', childThreadId, updatedAt, updatedAt, childId);
