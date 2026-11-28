@@ -1,4 +1,4 @@
-export { BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
+export { BASE_SYSTEM_PROMPT, CHILD_BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
 export { TOOL_NAMES, TOOL_SCHEMAS } from './tools';
 export {
   CONFIG_TOOL,

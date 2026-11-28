@@ -7,7 +7,7 @@
  * adapter never receives. Everything except the user message is joined into the system
  * prompt; the user message travels as the turn text.
  */
-import { BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
+import { BASE_SYSTEM_PROMPT, CHILD_BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
 import { buildTurnContext, estimateTokens, type TurnContextInput } from './context';
 import { buildCustomInstructions, buildPersonalSection, type PersonalProfile, type ResponseStyleName } from './custom';
 
@@ -42,6 +42,11 @@ export interface PromptSection {
 }
 
 export interface PromptAssemblyInput {
+  /**
+   * Who the prompt is for. A child gets the scoped base prompt and no skill sections,
+   * because its profile offers no skill tool and its brief is the whole task.
+   */
+  role?: 'main' | 'child';
   /** Raw `settings.customInstructions`; trimmed and capped here. */
   customInstructions?: string;
   /** Rendered project rule blocks from the repository, already budgeted. */
@@ -80,6 +85,7 @@ function section(name: PromptSectionName, text: string): PromptSection {
 }
 
 export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
+  const isChild = input.role === 'child';
   const custom = buildCustomInstructions(input.customInstructions ?? '');
   const projectRules = input.projectRules?.trim() ?? '';
   const brainAlways = input.brainAlways?.trim() ?? '';
@@ -87,7 +93,7 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
   const skills = input.skills?.trim() ?? '';
   const available = input.availableSkills?.trim() ?? '';
 
-  const sections = [section('base', BASE_SYSTEM_PROMPT)];
+  const sections = [section('base', isChild ? CHILD_BASE_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT)];
   // Plan mode is a mode, not a default: shipping its rubric on a work turn both costs
   // tokens and tells the model not to build.
   if (input.turnContext.mode === 'plan') {
@@ -118,10 +124,10 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
       ),
     );
   }
-  if (skills.length > 0) {
+  if (!isChild && skills.length > 0) {
     sections.push(section('skills', `${SKILLS_HEADING}\n${skills}`));
   }
-  if (available.length > 0) {
+  if (!isChild && available.length > 0) {
     sections.push(
       section(
         'available-skills',
