@@ -248,7 +248,7 @@ describe('db migrations', () => {
         now,
       );
 
-      expect(migrate(db)).toEqual([12, 13, 14, 15, 16]);
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 18]);
       // A second start must be a no-op, not a re-run that fails on an existing column.
       expect(migrate(db)).toEqual([]);
 
