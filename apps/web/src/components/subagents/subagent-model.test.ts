@@ -10,7 +10,6 @@ import {
   subagentElapsedMs,
   subagentFinishedLabel,
   subagentMessageDirectionLabel,
-  subagentPaneChildren,
   subagentStripChips,
   subagentsOfThread,
   type SubagentChip,
@@ -101,25 +100,6 @@ describe('childForThread', () => {
   });
 });
 
-describe('subagentPaneChildren', () => {
-  const running = child({ childId: 'r' });
-  const done = settled('d');
-  const failed = child({ childId: 'f', status: 'failed', finishedAt: T0 });
-  const cancelled = child({ childId: 'c', status: 'cancelled', finishedAt: T0 });
-
-  it('keeps running and failed children, and hides settled ones', () => {
-    expect(
-      subagentPaneChildren([running, done, failed, cancelled], null).map((item) => item.childId),
-    ).toEqual(['r', 'f']);
-  });
-
-  it('keeps the open settled child so its panel is reachable', () => {
-    expect(
-      subagentPaneChildren([running, done, failed, cancelled], 'd').map((item) => item.childId),
-    ).toEqual(['r', 'd', 'f']);
-  });
-});
-
 describe('subagentStripChips', () => {
   it('draws one chip per child while the row fits four', () => {
     const chips = subagentStripChips([
@@ -130,13 +110,7 @@ describe('subagentStripChips', () => {
     ]);
 
     expect(SUBAGENT_CHIP_LIMIT).toBe(4);
-    expect(chipIds(chips)).toEqual(['a', 'b', 'd', 'finished']);
-    expect(chips[3]).toEqual({
-      kind: 'finished',
-      count: 1,
-      label: '1 subagent finished',
-      childId: 'c',
-    });
+    expect(chipIds(chips)).toEqual(['a', 'b', 'c', 'd']);
   });
 
   it('keeps the first three running children and folds the rest into a count', () => {
@@ -145,18 +119,11 @@ describe('subagentStripChips', () => {
       child({ childId: 'r2' }),
       child({ childId: 'r3' }),
       child({ childId: 'r4' }),
-      child({ childId: 'r5' }),
       settled('s1'),
     ]);
 
-    expect(chipIds(chips)).toEqual(['r1', 'r2', 'r3', 'more', 'finished']);
+    expect(chipIds(chips)).toEqual(['r1', 'r2', 'r3', 'more']);
     expect(chips[3]).toEqual({ kind: 'more', count: 2, childId: 'r1' });
-    expect(chips[4]).toEqual({
-      kind: 'finished',
-      count: 1,
-      label: '1 subagent finished',
-      childId: 's1',
-    });
   });
 
   it('keeps only the running children when they are the ones that fit', () => {
@@ -169,13 +136,8 @@ describe('subagentStripChips', () => {
       settled('s4'),
     ]);
 
-    expect(chipIds(chips)).toEqual(['r1', 'r2', 'finished']);
-    expect(chips[2]).toEqual({
-      kind: 'finished',
-      count: 4,
-      label: '4 subagents finished',
-      childId: 's4',
-    });
+    expect(chipIds(chips)).toEqual(['r1', 'r2', 'more']);
+    expect(chips[2]).toEqual({ kind: 'more', count: 4, childId: 'r1' });
   });
 
   it('folds a settled set into one finished chip on the last child', () => {

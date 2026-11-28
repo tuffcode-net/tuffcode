@@ -199,14 +199,6 @@ function writeClause(profile: ToolProfile): string | null {
 }
 
 /**
- * The exact read-only shell surface, named so a child does not spend a turn guessing.
- * The prompt package cannot import the adapter that enforces the allowlist, so the
- * adapter test pins the same program and subcommand names.
- */
-const READ_ONLY_SHELL_DETAIL =
-  'read-only shell commands: ls, dir, pwd, cd, echo, cat, type, head, tail, wc, where, grep, rg, find, and git status, log, show, diff, branch, rev-parse, ls-files, grep, blame, remote; no file redirects (stderr to the null device is allowed)';
-
-/**
  * The TOOLS line for one profile, generated from the same table the executor enforces,
  * so a prompt cannot offer a tool its turn denies. Tool names become human words here
  * and nowhere else; `todo` and the reporting side of `subagent` are not worth a line.
@@ -222,7 +214,7 @@ export function describeToolProfile(profile: ToolProfile): string {
     if (mapped !== undefined) {
       push(mapped);
     } else if (name === 'bash') {
-      push(profile.bash === 'read-only' ? READ_ONLY_SHELL_DETAIL : 'shell commands');
+      push(profile.bash === 'read-only' ? 'read-only shell commands' : 'shell commands');
     } else if (name === 'memory') {
       push(profile.offer.includes('memory:add') ? 'memory search and notes' : 'memory search');
     }

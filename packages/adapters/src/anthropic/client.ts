@@ -65,6 +65,8 @@ export interface AnthropicRequestBody {
   model: string;
   messages: AnthropicMessage[];
   system?: string;
+  /** Cacheable head of `system`; marked with a cache breakpoint when present. */
+  systemStatic?: string;
   max_tokens: number;
   temperature?: number;
   /** Settings allowlist for this turn; unset offers every harness tool. */
@@ -209,17 +211,35 @@ function buildBody(
     request.toolOptions ?? {},
     request.toolProfile,
   );
+  // A cache breakpoint on the last tool lets the provider reuse the whole tool block.
+  if (tools.length > 0) {
+    tools[tools.length - 1] = {
+      ...(tools[tools.length - 1] as Record<string, unknown>),
+      cache_control: { type: 'ephemeral' },
+    };
+  }
   const budget = thinkingBudget(request.reasoningEffort);
   // The API needs max_tokens above the thinking budget and rejects a custom temperature
   // while thinking is on, so both are adjusted only when a budget applies.
   const maxTokens = budget === null ? request.max_tokens : Math.max(request.max_tokens, budget + 4096);
+  // The static head is cached on its own so a changing memory block cannot invalidate it.
+  const staticSystem = request.systemStatic?.trim() ?? '';
+  const cached = staticSystem.length > 0 && system.startsWith(staticSystem);
+  const systemPayload = !cached
+    ? system
+    : [
+        { type: 'text', text: staticSystem, cache_control: { type: 'ephemeral' } },
+        ...(system.length > staticSystem.length
+          ? [{ type: 'text', text: system.slice(staticSystem.length) }]
+          : []),
+      ];
   return {
     model: request.model,
     max_tokens: maxTokens,
     messages,
     ...(tools.length > 0 ? { tools } : {}),
     stream: true,
-    ...(system.length > 0 ? { system } : {}),
+    ...(system.length > 0 ? { system: systemPayload } : {}),
     ...(budget !== null ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
     ...(budget === null && config.temperature !== undefined
       ? { temperature: config.temperature }

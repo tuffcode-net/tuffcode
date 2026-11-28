@@ -1,7 +1,7 @@
 import type { Goal } from '@tuffcode/contracts';
 import { newId, type Logger } from '@tuffcode/shared';
 import type { Repos } from '../db/repos/index.js';
-import { tryRunGit } from '../git/index.js';
+import { hasUncommittedWork, tryRunGit } from '../git/index.js';
 import { TERMINAL_GOAL_STATES, TERMINAL_TASK_STATES } from './caps.js';
 import { deleteChildThread } from './threads.js';
 
@@ -87,8 +87,33 @@ export async function recoverOrphanedGoals(input: {
           counts.worktreesKept += 1;
           continue;
         }
-        if (count > 0) {
+        // A task interrupted mid run has uncommitted edits and no commit of its own, so
+        // the checkout is kept whenever it holds work no commit carries, and the thread
+        // says where that work is. This is the same rule the subagent archive uses.
+        const dirty = await hasUncommittedWork(worktreePath);
+        if (count > 0 || dirty) {
           counts.worktreesKept += 1;
+          if (dirty) {
+            const held = count > 0 ? 'uncommitted changes' : 'uncommitted changes and no commit';
+            try {
+              repos.messages.add({
+                id: newId('msg'),
+                threadId,
+                role: 'assistant',
+                content:
+                  `Council recovery kept this checkout at ${worktreePath} because it holds ` +
+                  `${held}. The goal was closed by a restart, so the work is not part of any ` +
+                  'pull request; commit or copy it before deleting this thread.',
+                createdAt: new Date().toISOString(),
+              });
+            } catch (error) {
+              logger.warn('council recovery could not note a kept worktree', {
+                goalId: goal.id,
+                threadId,
+                message: errorMessage(error),
+              });
+            }
+          }
           continue;
         }
         try {

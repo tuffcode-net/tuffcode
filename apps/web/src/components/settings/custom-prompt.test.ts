@@ -196,7 +196,6 @@ describe('prompt preview sections', () => {
       PROMPT_SECTION_LABEL['about-user'],
       PROMPT_SECTION_LABEL['custom-instructions'],
       PROMPT_SECTION_LABEL['project-rules'],
-      PROMPT_SECTION_LABEL['review-comments'],
       PROMPT_SECTION_LABEL.skills,
       PROMPT_SECTION_LABEL['available-skills'],
       PROMPT_SECTION_LABEL['brain-always'],

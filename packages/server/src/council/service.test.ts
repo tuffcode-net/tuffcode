@@ -1464,6 +1464,60 @@ describe('council plan approval', () => {
 });
 
 describe('council escalation answers', () => {
+  it('runs a fan-in dependent after the captain accepts the escalated branch', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts'], ['First']),
+              planTask('Third', ['src/third.ts'], ['First']),
+              planTask('Fourth', ['src/fourth.ts'], ['Second', 'Third']),
+            ]),
+          ),
+        );
+      }
+      if (title === 'Review: First') {
+        return Promise.resolve(result(input, 'VERDICT: escalate\nFINDINGS: needs a call'));
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      // The loop parks without publishing anything else, so a short real wait is the
+      // only way to observe that the rest of the plan is still queued and not dead:
+      // fake timers cannot advance a promise chain already parked on an answer RPC.
+      const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
+      setTimeout(settle, 20);
+      await settled;
+      // The fan-in task waits through the two branches, so nothing may be terminalized
+      // while the captain still owes an answer.
+      const parked = harness.council.status(goalId);
+      expect(parked.goal.state).toBe('running');
+      for (const title of ['Second', 'Third', 'Fourth']) {
+        expect(parked.tasks.find((task) => task.title === title)?.state).toBe('queued');
+      }
+      const first = parked.tasks.find((task) => task.title === 'First');
+      await harness.council.answerEscalation({ taskId: first?.id ?? '', decision: 'accept' });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      const tasks = harness.council.status(goalId).tasks;
+      for (const title of ['First', 'Second', 'Third', 'Fourth']) {
+        expect(tasks.find((task) => task.title === title)?.state).toBe('passed');
+      }
+      expect(harness.ports.created.some((request) => request.title === 'Council: Fourth')).toBe(
+        true,
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it('fails a dropped task and its dependent', async () => {
     const harness = createHarness();
     harness.ports.handler = (input, title) => {

@@ -160,18 +160,36 @@ function blockedReason(planTask: PlanTask, byTitle: Map<string, Task>): string {
 }
 
 /**
- * True when a queued task waits on a captain decision and nothing else: every
- * dependency either passed or awaits the captain, and at least one awaits. A task
- * whose dependency failed or is missing is not waiting, so the failure path runs.
+ * True when a queued task waits on a captain decision, directly or through other
+ * queued tasks: every dependency either passed or leads to an awaiting-captain task,
+ * and at least one leads there. A fan-in task behind two escalated branches is waiting
+ * too, so it parks with them instead of being terminalized. A dependency that failed,
+ * is blocked, or is missing is not waiting, so the failure path runs.
  */
-function waitsOnCaptain(planTask: PlanTask, byTitle: Map<string, Task>): boolean {
+function waitsOnCaptain(
+  planTask: PlanTask,
+  byTitle: Map<string, Task>,
+  planTasks: Map<string, PlanTask>,
+  seen: Set<string> = new Set(),
+): boolean {
   let waiting = false;
   for (const title of planTask.dependsOn) {
     const dependency = byTitle.get(title.toLowerCase());
     if (dependency === undefined) return false;
     if (dependency.state === 'passed' || dependency.state === 'merged') continue;
-    if (dependency.state !== 'awaiting-captain') return false;
-    waiting = true;
+    if (dependency.state === 'awaiting-captain') {
+      waiting = true;
+      continue;
+    }
+    if (dependency.state === 'queued') {
+      const dependencyPlan = planTasks.get(dependency.id);
+      if (dependencyPlan === undefined || seen.has(dependency.id)) return false;
+      seen.add(dependency.id);
+      if (!waitsOnCaptain(dependencyPlan, byTitle, planTasks, seen)) return false;
+      waiting = true;
+      continue;
+    }
+    return false;
   }
   return waiting;
 }
@@ -894,28 +912,22 @@ export function createCouncil(deps: CouncilDeps): Council {
         const byRemainingTitle = new Map(
           tasksNow.map((task) => [task.title.toLowerCase(), task]),
         );
-        // An escalated task keeps the goal open even when nothing else is queued: the
-        // captain still owes an answer, and the run waits for it instead of reporting a
-        // goal that never got one. A queued task that no answer can fix (a failed or
-        // missing dependency) takes the failure path rather than parking forever, and
-        // an answer that is already running its revision turn parks the same way.
-        const fixable = remaining.every((task) => {
-          const planTask = run.planTasks.get(task.id);
-          return planTask !== undefined && waitsOnCaptain(planTask, byRemainingTitle);
-        });
-        const awaitingCaptain = tasksNow.some((task) => task.state === 'awaiting-captain');
-        const captainPending =
-          run.answering || (fixable && (remaining.length > 0 || awaitingCaptain));
-        if (captainPending) {
-          try {
-            await run.parking.park('escalation');
-          } catch {
-            break;
-          }
-          continue;
-        }
-        if (remaining.length === 0) break;
+        // A queued task stays reachable when every dependency either passed or waits on
+        // the captain, directly or through another queued task, so a fan-in task behind
+        // two escalated branches waits with them. A task no answer can revive is dead
+        // and takes the failure path now, so a goal with one broken branch still ends.
+        const waiting: Task[] = [];
+        const dead: Task[] = [];
         for (const task of remaining) {
+          const planTask = run.planTasks.get(task.id);
+          if (planTask === undefined) {
+            dead.push(task);
+            continue;
+          }
+          if (waitsOnCaptain(planTask, byRemainingTitle, run.planTasks)) waiting.push(task);
+          else dead.push(task);
+        }
+        for (const task of dead) {
           const planTask = run.planTasks.get(task.id);
           if (planTask === undefined) {
             advanceTask(run, task.id, 'failed', { error: 'plan metadata is missing' });
@@ -929,6 +941,19 @@ export function createCouncil(deps: CouncilDeps): Council {
             error: blockedReason(planTask, byRemainingTitle),
           });
         }
+        const awaitingCaptain = tasksNow.some((task) => task.state === 'awaiting-captain');
+        // The captain owes an answer while a task waits on one, or while an answer is
+        // already running its revision turn. Otherwise every queued task was dead and
+        // was settled above, so the loop ends instead of parking forever.
+        if (run.answering || waiting.length > 0 || awaitingCaptain) {
+          try {
+            await run.parking.park('escalation');
+          } catch {
+            break;
+          }
+          continue;
+        }
+        if (remaining.length === 0) break;
         continue;
       }
 

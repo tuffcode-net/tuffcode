@@ -1,4 +1,4 @@
-import { mkdtempSync, rmdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, rmdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { Checkpoint } from '@tuffcode/contracts';
@@ -16,50 +16,63 @@ import { samePath } from './worktree.js';
  */
 const SNAPSHOT_SUBJECT = 'tuffcode checkpoint';
 
+/** Subject of the second-parent commit that keeps the checkpoint's index tree reachable. */
+const INDEX_SUBJECT = 'tuffcode checkpoint index';
+
 /** Pathspecs per `git clean` call, keeping argv well under the Windows limit. */
 const CLEAN_BATCH = 50;
 
 interface Snapshot {
-  /** Commit that holds the snapshot tree; HEAD itself when the worktree matches it. */
+  /** Commit that holds the snapshot tree; HEAD itself when nothing differs from it. */
   commitSha: string;
-  /** True when the tree differs from HEAD, so the snapshot holds working-tree content. */
+  /** True when the worktree or the index differs from HEAD. */
   dirty: boolean;
 }
 
 /**
  * Writes the worktree, untracked non-ignored files included, as a tree and wraps it in a
  * commit whose parent is HEAD. The real index, HEAD, and the branch are never touched:
- * `git add -A` runs against a throwaway `GIT_INDEX_FILE` outside the worktree, and
- * `commit-tree` creates a dangling commit that only the checkpoint ref keeps reachable.
+ * the throwaway `GIT_INDEX_FILE` outside the worktree starts as a copy of the real index,
+ * so files that are tracked and also matched by `.gitignore` stay in the snapshot and the
+ * stat cache is reused, and `commit-tree` creates a dangling commit that only the
+ * checkpoint ref keeps reachable. A second parent keeps the index tree, so a revert can
+ * restore what was staged as well as what was on disk.
  */
 async function writeSnapshot(worktreePath: string): Promise<Snapshot> {
   const headSha = (await runGit(['rev-parse', 'HEAD'], worktreePath)).trim();
   const headTree = (await runGit(['rev-parse', 'HEAD^{tree}'], worktreePath)).trim();
   const indexDir = mkdtempSync(join(tmpdir(), 'tuffcode-snapshot-'));
   try {
-    const env: NodeJS.ProcessEnv = { ...scrubbedEnv(), GIT_INDEX_FILE: join(indexDir, 'index') };
+    const realIndex = (
+      await runGit(['rev-parse', '--path-format=absolute', '--git-path', 'index'], worktreePath)
+    ).trim();
+    const snapshotIndex = join(indexDir, 'index');
+    if (existsSync(realIndex)) copyFileSync(realIndex, snapshotIndex);
+    const env: NodeJS.ProcessEnv = { ...scrubbedEnv(), GIT_INDEX_FILE: snapshotIndex };
+    // The index tree records what was staged at checkpoint time. An unmerged index has no
+    // tree (`write-tree` refuses it), so that snapshot keeps the worktree content only.
+    let indexTree: string | undefined;
+    try {
+      indexTree = (await runGit(['write-tree'], worktreePath, { env })).trim();
+    } catch {
+      indexTree = undefined;
+    }
     await runGit(['add', '-A'], worktreePath, { env });
     const tree = (await runGit(['write-tree'], worktreePath, { env })).trim();
-    if (tree === headTree) return { commitSha: headSha, dirty: false };
+    const indexDiffers = indexTree !== undefined && indexTree !== headTree;
+    if (tree === headTree && !indexDiffers) return { commitSha: headSha, dirty: false };
     // The synthetic identity keeps the call working in repositories where the user has
     // no committer identity configured; these commits are never shown as user work.
-    const commitSha = (
-      await runGit(
-        [
-          '-c',
-          'user.name=Tuffcode',
-          '-c',
-          'user.email=checkpoint@tuffcode.local',
-          'commit-tree',
-          tree,
-          '-p',
-          headSha,
-          '-m',
-          SNAPSHOT_SUBJECT,
-        ],
-        worktreePath,
-      )
-    ).trim();
+    const identity = ['-c', 'user.name=Tuffcode', '-c', 'user.email=checkpoint@tuffcode.local'];
+    const args = [...identity, 'commit-tree', tree, '-p', headSha];
+    if (indexDiffers && indexTree !== undefined) {
+      const indexCommit = (
+        await runGit([...identity, 'commit-tree', indexTree, '-m', INDEX_SUBJECT], worktreePath)
+      ).trim();
+      args.push('-p', indexCommit);
+    }
+    args.push('-m', SNAPSHOT_SUBJECT);
+    const commitSha = (await runGit(args, worktreePath)).trim();
     return { commitSha, dirty: true };
   } finally {
     rmSync(indexDir, { recursive: true, force: true });
@@ -149,8 +162,17 @@ async function removeNewFiles(worktreePath: string, snapshotSha: string): Promis
     .filter((path) => path.length > 0);
   const removable = untracked.filter((path) => !snapshotPaths.has(entryKey(path)));
   for (let start = 0; start < removable.length; start += CLEAN_BATCH) {
+    // `--literal-pathspecs` keeps a name like `later[1].txt` from matching `later1.txt`,
+    // which the snapshot may hold and the clean would then delete.
     await runGit(
-      ['clean', '-f', '-d', '--', ...removable.slice(start, start + CLEAN_BATCH)],
+      [
+        '--literal-pathspecs',
+        'clean',
+        '-f',
+        '-d',
+        '--',
+        ...removable.slice(start, start + CLEAN_BATCH),
+      ],
       worktreePath,
     );
   }
@@ -164,11 +186,27 @@ async function isFullSnapshot(worktreePath: string, commitSha: string): Promise<
 }
 
 /**
+ * Tree of the index as it was at checkpoint time, kept by the snapshot commit's second
+ * parent. Absent for HEAD checkpoints, legacy stash commits, and snapshots taken while
+ * the index was unmerged, none of which can carry a tree.
+ */
+async function readIndexTree(worktreePath: string, commitSha: string): Promise<string | undefined> {
+  if (!(await isFullSnapshot(worktreePath, commitSha))) return undefined;
+  const parents = (await runGit(['rev-list', '--parents', '-n', '1', commitSha], worktreePath))
+    .trim()
+    .split(' ')
+    .filter((entry) => entry.length > 0);
+  if (parents.length < 3) return undefined;
+  return (await runGit(['rev-parse', `${parents[2]}^{tree}`], worktreePath)).trim();
+}
+
+/**
  * Restores the worktree to a checkpoint. Destructive by design, so it refuses unless the
  * caller passes `confirm`. `git read-tree --reset -u` rewrites index and worktree from
  * the snapshot tree while HEAD and the branch stay put, so a revert never commits and
  * never detaches the checkout. A dirty worktree is snapshotted first, which makes the
- * clean that follows recoverable.
+ * clean that follows recoverable. The index tree is restored last, without `-u`, so
+ * `git status` reports the same staged and unstaged split the checkpoint saw.
  */
 export async function revertCheckpoint(
   repos: Repos,
@@ -202,11 +240,24 @@ export async function revertCheckpoint(
   }
   // Legacy checkpoints were built by `git stash create`, which never captured untracked
   // files. Cleaning against them would delete files no snapshot holds, so only full
-  // snapshots get the clean. The check runs before the restore so a bad commit fails
-  // early instead of halfway through.
+  // snapshots get the clean. A checkpoint whose tree equals HEAD's was taken with no
+  // untracked non-ignored file present, so anything in that set now was created later.
+  // The checks run before the restore so a bad commit fails early instead of halfway.
   const full = await isFullSnapshot(worktreePath, checkpoint.commitSha);
+  const snapshotTree = (
+    await runGit(['rev-parse', `${checkpoint.commitSha}^{tree}`], worktreePath)
+  ).trim();
+  const headTree = (await runGit(['rev-parse', 'HEAD^{tree}'], worktreePath)).trim();
+  const indexTree = await readIndexTree(worktreePath, checkpoint.commitSha);
   await runGit(['read-tree', '--reset', '-u', checkpoint.commitSha], worktreePath);
-  if (full) {
+  if (full || snapshotTree === headTree) {
     await removeNewFiles(worktreePath, checkpoint.commitSha);
+  }
+  if (indexTree !== undefined) {
+    await runGit(['read-tree', indexTree], worktreePath);
+  } else {
+    // Nothing recorded what was staged, so leave the restored files unstaged rather than
+    // reporting the whole snapshot as a staged change.
+    await runGit(['reset'], worktreePath);
   }
 }

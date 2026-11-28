@@ -12,14 +12,15 @@ import {
 } from './subagents';
 
 /** The one sentence each profile must produce; the prompt never writes it by hand. */
-const READ_ONLY_SHELL =
-  'read-only shell commands: ls, dir, pwd, cd, echo, cat, type, head, tail, wc, where, grep, rg, find, and git status, log, show, diff, branch, rev-parse, ls-files, grep, blame, remote; no file redirects (stderr to the null device is allowed)';
-
 const TOOLS_LINES: Record<SubagentType, string> = {
-  explorer: `read and search, ${READ_ONLY_SHELL}, MCP lookups, web fetch, memory search; you may write .md files only.`,
-  planner: `read and search, ${READ_ONLY_SHELL}, MCP lookups, web fetch, memory search; you may write .md files only.`,
-  reviewer: `read and search, ${READ_ONLY_SHELL}, MCP lookups, web fetch, memory search; you may write .md files only.`,
-  notetaker: `read and search, ${READ_ONLY_SHELL}, MCP lookups, web fetch, memory search and notes; you may write .md files only.`,
+  explorer:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  planner:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  reviewer:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  notetaker:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search and notes; you may write .md files only.',
   worker:
     'read and search, shell commands, MCP lookups, memory search and notes, web fetch; you may write any file in your worktree.',
 };
@@ -47,18 +48,6 @@ describe('subagent prompts', () => {
     );
     expect(describeToolProfile(SUBAGENT_TOOL_PROFILES.worker)).not.toContain('read-only');
     expect(describeToolProfile(SUBAGENT_TOOL_PROFILES.explorer)).not.toContain('any file');
-  });
-
-  it('names the exact read-only programs, git subcommands and the redirect rule', () => {
-    const line = describeToolProfile(SUBAGENT_TOOL_PROFILES.explorer);
-    for (const program of ['ls', 'cat', 'head', 'tail', 'wc', 'where', 'grep', 'rg', 'find']) {
-      expect(line).toContain(program);
-    }
-    expect(line).toContain(
-      'git status, log, show, diff, branch, rev-parse, ls-files, grep, blame, remote',
-    );
-    expect(line).toContain('no file redirects');
-    expect(line).toContain('stderr to the null device is allowed');
   });
 
   it('fills every placeholder in the header, body and footer', () => {

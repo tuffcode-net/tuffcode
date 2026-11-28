@@ -115,6 +115,34 @@ describe('recoverOrphanedGoals', () => {
     expect(report?.content).toContain('worktrees removed: 1');
   });
 
+  it('keeps a worktree that holds uncommitted work and says where it is', async () => {
+    ctx = createTestContext();
+    const project = await seed(ctx);
+    const child = await provision(ctx, project, 'Council: Interrupted');
+    const childPath = child.worktreePath ?? '';
+    // The normal state after a crash: an edit the task never committed.
+    writeFileSync(join(childPath, 'work-in-progress.ts'), 'export const wip = 1;\n');
+    const goal = ctx.repos.council.createGoal({
+      threadId: 'thr_goal',
+      text: 'Ship the widget',
+      autonomy: 'auto',
+      state: 'running',
+    });
+    runningTask(ctx, goal.id, child.id, 'Interrupted');
+
+    const result = await recoverOrphanedGoals({ repos: ctx.repos, logger: silentLogger() });
+
+    expect(result).toEqual({ goals: 1, tasksFailed: 1, worktreesRemoved: 0, worktreesKept: 1 });
+    expect(ctx.repos.threads.get(child.id)).toBeDefined();
+    expect(existsSync(childPath)).toBe(true);
+    expect(existsSync(join(childPath, 'work-in-progress.ts'))).toBe(true);
+    const note = ctx.repos.messages
+      .list(child.id)
+      .find((message) => message.content.includes('Council recovery kept this checkout'));
+    expect(note?.content).toContain(childPath);
+    expect(note?.content).toContain('uncommitted changes');
+  });
+
   it('keeps a worktree when git cannot report its commits', async () => {
     ctx = createTestContext();
     const project = await seed(ctx);

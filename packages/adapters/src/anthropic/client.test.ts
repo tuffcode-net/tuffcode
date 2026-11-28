@@ -125,6 +125,35 @@ describe('AnthropicClient', () => {
     expect(tools[0]?.input_schema).toBeDefined();
   });
 
+  it('marks the static system head and the last tool as cache breakpoints', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(streamOf(''));
+    };
+    const client = new AnthropicClient(
+      { baseUrl: DEFAULT_ANTHROPIC_BASE_URL, headers: {}, secret: 'sk-ant-test', maxTokens: 128 },
+      { fetchFn, sleep: async () => {}, logger },
+    );
+    const staticHead = 'You are Tuffcode.';
+    const dynamic = '## Brain notes\n- prefer pnpm';
+
+    await client.stream(
+      { ...request, system: `${staticHead}\n\n${dynamic}`, systemStatic: staticHead },
+      new AbortController().signal,
+    );
+
+    expect(bodies[0]?.system).toEqual([
+      { type: 'text', text: staticHead, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: `\n\n${dynamic}` },
+    ]);
+    const blocks = bodies[0]?.system as { text: string }[];
+    expect(blocks.map((block) => block.text).join('')).toBe(`${staticHead}\n\n${dynamic}`);
+    const tools = bodies[0]?.tools as { name: string; cache_control?: unknown }[];
+    expect(tools.at(-1)?.cache_control).toEqual({ type: 'ephemeral' });
+    expect(tools[0]?.cache_control).toBeUndefined();
+  });
+
   it('offers only the allowlisted tools, and none when the allowlist is empty', async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {

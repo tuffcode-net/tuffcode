@@ -74,7 +74,8 @@ interface CachedSession {
 }
 
 interface ActiveRun {
-  session: AdapterSession;
+  /** Null while a reserved turn is still assembling, before its adapter exists. */
+  session: AdapterSession | null;
   turnId: string;
   controller: AbortController;
   adapterKey: string;
@@ -586,9 +587,29 @@ export function createRunner(deps: RunnerDeps): Runner {
   }
 
   /**
-   * The one turn-start path: every guard has passed and the ids are already allocated.
-   * `send` calls it directly, and the queue calls it again with the ids it allocated at
-   * send time, so assembling, persisting, and launching a turn exist once.
+   * Whether this turn still owns the thread's one slot. An interrupt, a dispose or a
+   * newer turn takes the slot away, and the turn that lost it must not start.
+   */
+  function ownsSlot(threadId: string, turnId: string): boolean {
+    return active.get(threadId)?.turnId === turnId;
+  }
+
+  /**
+   * Claims the thread's slot before the first await, so a second send cannot start a
+   * turn on top of this one. `startTurn` fills the session in once the adapter exists;
+   * until then the entry only marks which turn owns the thread.
+   */
+  function reserveTurn(threadId: string, turnId: string): AbortController {
+    const controller = new AbortController();
+    active.set(threadId, { session: null, turnId, controller, adapterKey: '' });
+    return controller;
+  }
+
+  /**
+   * The one turn-start path: every guard has passed, the ids are already allocated and
+   * the slot is already reserved by the caller. `send` calls it directly, and the queue
+   * calls it again with the ids it allocated at send time, so assembling, persisting,
+   * and launching a turn exist once.
    */
   async function startTurn(input: {
     thread: Thread;
@@ -599,15 +620,33 @@ export function createRunner(deps: RunnerDeps): Runner {
     attachments: readonly Attachment[];
     turnId: string;
     createdAt: string;
+    /** Created by the reservation, so an interrupt can abort a turn that is assembling. */
+    controller: AbortController;
   }): Promise<{ turnId: string }> {
-      const { thread, project, provider, worktreePath, text, attachments, turnId, createdAt } =
-        input;
+      const {
+        thread,
+        project,
+        provider,
+        worktreePath,
+        text,
+        attachments,
+        turnId,
+        createdAt,
+        controller,
+      } = input;
       const resolved = await resolveAttachments(worktreePath, attachments);
       if (resolved.attachments.length === 0 && text.trim().length === 0) {
         throw badRequest(resolved.warnings[0] ?? 'the message has no content');
       }
       const turnAttachments = resolved.attachments;
       const storedAttachments = await persistAttachments(turnAttachments);
+      // The slot was claimed before this function ran, so losing it means the user
+      // interrupted or disposed the thread while the turn was assembling. Nothing is
+      // written yet: drop the user row the queue wrote and never start the run.
+      if (!ownsSlot(thread.id, turnId) || controller.signal.aborted) {
+        repos.messages.removeMany([userMessageId(turnId)]);
+        return { turnId };
+      }
       const now = new Date(createdAt);
       const settings = deps.settings();
       const limits = threadLimits(repos, thread, settings);
@@ -728,7 +767,6 @@ export function createRunner(deps: RunnerDeps): Runner {
       }
       emitContext(thread, assembly.sections, { excludeMessageId, compacted, limits });
 
-      const controller = new AbortController();
       const handoff = freshSession
         ? buildHandoffDigest(
             repos.messages.list(thread.id).filter((message) => message.id !== excludeMessageId),
@@ -764,6 +802,17 @@ export function createRunner(deps: RunnerDeps): Runner {
         ...(effort === undefined ? {} : { reasoningEffort: effort }),
         maxOutputTokens: limits.maxOutputTokens,
       };
+      // The adapter creation awaited, so the slot may have been taken away in the
+      // meantime. The turn row exists now, so this one settles instead of vanishing,
+      // and the session it built must not outlive a disposed thread.
+      if (!ownsSlot(thread.id, turnId) || controller.signal.aborted) {
+        if (sessions.get(thread.id)?.session === session) {
+          sessions.delete(thread.id);
+          await session.dispose().catch(() => undefined);
+        }
+        settleTurn(thread, turnId, 'interrupted', undefined);
+        return { turnId };
+      }
       active.set(thread.id, { session, turnId, controller, adapterKey });
       setThreadStatus(thread, 'running');
       const state: TurnState = { text: '', persisted: false, settled: false, cancelled: false };
@@ -802,6 +851,9 @@ export function createRunner(deps: RunnerDeps): Runner {
       failQueued(thread, next, 'the thread can no longer start a turn');
       return;
     }
+    // Claim the slot before the first await: a send that lands while this turn is
+    // assembling must join the backlog, not start a second turn on the same thread.
+    const controller = reserveTurn(thread.id, next.turnId);
     void startTurn({
       thread,
       project,
@@ -811,6 +863,7 @@ export function createRunner(deps: RunnerDeps): Runner {
       attachments: next.attachments,
       turnId: next.turnId,
       createdAt: next.createdAt,
+      controller,
     }).catch((error: unknown) => {
       logger.warn('queued message could not start', {
         threadId: thread.id,
@@ -821,6 +874,8 @@ export function createRunner(deps: RunnerDeps): Runner {
       if (turn === undefined || turn.finishedAt === null) {
         failQueued(thread, next, errorMessage(error));
       }
+      // The failed turn must not keep the slot it reserved, or the backlog stalls.
+      if (active.get(thread.id)?.turnId === next.turnId) active.delete(thread.id);
       // One failed delivery must not strand the rest of the backlog; the queue is
       // bounded, so this recursion ends.
       deliverQueued(repos.threads.get(thread.id) ?? thread);
@@ -900,16 +955,27 @@ export function createRunner(deps: RunnerDeps): Runner {
         return { turnId, queued: true };
       }
 
-      return startTurn({
-        thread,
-        project,
-        provider,
-        worktreePath,
-        text,
-        attachments,
-        turnId: newId('turn'),
-        createdAt: nowIso(),
-      });
+      // Claim the slot before the first await, so a second send that arrives while this
+      // turn is assembling joins the backlog instead of starting a turn of its own.
+      const turnId = newId('turn');
+      const controller = reserveTurn(thread.id, turnId);
+      try {
+        return await startTurn({
+          thread,
+          project,
+          provider,
+          worktreePath,
+          text,
+          attachments,
+          turnId,
+          createdAt: nowIso(),
+          controller,
+        });
+      } catch (error) {
+        // A turn that never launched must not keep the slot, or the thread stalls.
+        if (active.get(thread.id)?.turnId === turnId) active.delete(thread.id);
+        throw error;
+      }
     },
 
     async interrupt(threadId) {
@@ -934,16 +1000,22 @@ export function createRunner(deps: RunnerDeps): Runner {
       active.delete(threadId);
       const cached = sessions.get(threadId);
       sessions.delete(threadId);
-      settleTurn(thread, run.turnId, 'interrupted', state);
+      // A reserved turn has no row and no stream yet, so there is nothing to settle:
+      // startTurn sees the lost slot and drops the message. A turn that ran settles here.
+      if (run.session !== null) settleTurn(thread, run.turnId, 'interrupted', state);
       run.controller.abort();
 
-      await run.session.interrupt().catch(() => {
-        logger.warn('adapter interrupt failed', { threadId, turnId: run.turnId });
-      });
+      if (run.session !== null) {
+        await run.session.interrupt().catch(() => {
+          logger.warn('adapter interrupt failed', { threadId, turnId: run.turnId });
+        });
+      }
       const disposable = cached?.session ?? run.session;
-      await disposable.dispose().catch(() => {
-        logger.warn('interrupted session dispose failed', { threadId, turnId: run.turnId });
-      });
+      if (disposable !== null) {
+        await disposable.dispose().catch(() => {
+          logger.warn('interrupted session dispose failed', { threadId, turnId: run.turnId });
+        });
+      }
     },
 
     async approve(threadId, approvalId, decision) {
@@ -955,7 +1027,8 @@ export function createRunner(deps: RunnerDeps): Runner {
       const thread = repos.threads.get(threadId);
       if (thread === undefined) throw notFound('thread not found');
       const run = active.get(threadId);
-      if (run === undefined) {
+      // A reserved turn has no adapter yet, so it cannot have asked for an approval.
+      if (run === undefined || run.session === null) {
         repos.approvals.resolve(approvalId, 'deny', nowIso());
         setThreadStatus(thread, 'failed');
         throw conflict('no active run for this approval');
@@ -972,7 +1045,7 @@ export function createRunner(deps: RunnerDeps): Runner {
       dropQueue(threadId);
       const run = active.get(threadId);
       if (run !== undefined) {
-        await run.session.interrupt().catch(() => undefined);
+        if (run.session !== null) await run.session.interrupt().catch(() => undefined);
         run.controller.abort();
         active.delete(threadId);
       }

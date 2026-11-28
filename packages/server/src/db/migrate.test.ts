@@ -78,58 +78,6 @@ describe('db migrations', () => {
     }
   });
 
-  it('adds the remote session tables to a database that already holds data', () => {
-    env = createTempEnv();
-    const db = openDb(join(env.root, 'upgrade.db'));
-    try {
-      const now = new Date().toISOString();
-      const remoteMigration = MIGRATIONS.find((entry) => entry.name === 'remote-access');
-      if (remoteMigration === undefined) throw new Error('the remote migration is missing');
-      // Build the previous schema, then write the rows an installed app already has.
-      for (const migration of MIGRATIONS.filter((entry) => entry.name !== 'remote-access')) {
-        db.exec(migration.sql);
-        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
-          migration.version,
-          now,
-        );
-      }
-      db.prepare(
-        'INSERT INTO projects (id, name, path, default_branch, created_at) VALUES (?, ?, ?, ?, ?)',
-      ).run('prj_keep', 'Keep me', 'C:/work/keep', 'main', now);
-      db.prepare(
-        `INSERT INTO threads (id, project_id, title, provider_id, model_id, execution_mode, permission_mode, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run('thr_keep', 'prj_keep', 'Existing chat', 'prv_keep', 'model', 'work', 'ask', 'idle', now, now);
-      db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)').run(
-        'theme',
-        JSON.stringify('light'),
-        now,
-      );
-
-      expect(migrate(db)).toEqual([remoteMigration.version]);
-
-      expect(db.prepare('SELECT name FROM projects WHERE id = ?').get('prj_keep')?.['name']).toBe(
-        'Keep me',
-      );
-      expect(db.prepare('SELECT title FROM threads WHERE id = ?').get('thr_keep')?.['title']).toBe(
-        'Existing chat',
-      );
-      expect(
-        JSON.parse(
-          String(db.prepare('SELECT value FROM settings WHERE key = ?').get('theme')?.['value']),
-        ),
-      ).toBe('light');
-      expect(db.prepare('SELECT COUNT(*) AS n FROM remote_sessions').get()?.['n']).toBe(0);
-
-      // The repository reads the new table and the token fingerprint row.
-      const repos = createRepos(db);
-      expect(repos.remoteSessions.list()).toEqual([]);
-      expect(repos.remoteSessions.tokenFingerprint()).toBeUndefined();
-    } finally {
-      db.close();
-    }
-  });
-
   it('accepts the anthropic provider kind and keeps the model cascade', () => {
     env = createTempEnv();
     const db = openDb(join(env.root, 'tuffcode.db'));
@@ -187,6 +135,211 @@ describe('db migrations', () => {
         .all();
       expect(remaining).toHaveLength(1);
       expect(remaining[0]).toEqual({ id: 'mcp_two', args: '[]', env: '{}', enabled: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a populated version 11 database without losing a row', () => {
+    env = createTempEnv();
+    const db = openDb(join(env.root, 'tuffcode.db'));
+    const now = new Date().toISOString();
+    try {
+      // Build the schema the previous release shipped, row by row, the way a user's
+      // database looks when the five new migrations arrive.
+      const older = MIGRATIONS.filter((migration) => migration.version <= 11);
+      expect(older).toHaveLength(11);
+      for (const migration of older) {
+        db.exec(migration.sql);
+        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+          migration.version,
+          now,
+        );
+      }
+      const insert = (sql: string, ...values: (string | null)[]) =>
+        db.prepare(sql).run(...values);
+      insert(
+        'INSERT INTO projects (id, name, path, default_branch, created_at) VALUES (?, ?, ?, ?, ?)',
+        'prj_old',
+        'Old project',
+        env.root,
+        'main',
+        now,
+      );
+      insert(
+        'INSERT INTO threads (id, project_id, parent_thread_id, title, provider_id, model_id, execution_mode, permission_mode, status, worktree_path, branch, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'thr_old',
+        'prj_old',
+        null,
+        'Old thread',
+        'prv_old',
+        'model-old',
+        'work',
+        'full-auto',
+        'ready-to-review',
+        env.root,
+        'tuffcode/thr_old',
+        'main',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)',
+        'msg_old',
+        'thr_old',
+        'user',
+        'old prompt',
+        now,
+      );
+      insert(
+        'INSERT INTO subagents (child_id, thread_id, child_thread_id, type, provider_id, model, status, task, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'sub_old',
+        'thr_old',
+        null,
+        'explorer',
+        'prv_old',
+        'model-old',
+        'done',
+        'explore it',
+        'found it',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO subagent_messages (id, child_id, direction, text, created_at) VALUES (?, ?, ?, ?, ?)',
+        'smsg_old',
+        'sub_old',
+        'to-parent',
+        'report',
+        now,
+      );
+      insert(
+        'INSERT INTO turns (id, thread_id, status, injected_ids, created_at) VALUES (?, ?, ?, ?, ?)',
+        'turn_old',
+        'thr_old',
+        'complete',
+        '[]',
+        now,
+      );
+      insert(
+        'INSERT INTO terminal_sessions (id, thread_id, cwd, shell, created_at) VALUES (?, ?, ?, ?, ?)',
+        'term_old',
+        'thr_old',
+        env.root,
+        'bash',
+        now,
+      );
+      insert(
+        'INSERT INTO mcp_servers (id, label, command, args, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'mcp_old',
+        'Old server',
+        'node',
+        '[]',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO brain_entries (id, kind, scope, text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'brain_old',
+        'rule',
+        'global',
+        'always test',
+        now,
+        now,
+      );
+
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16]);
+      // A second start must be a no-op, not a re-run that fails on an existing column.
+      expect(migrate(db)).toEqual([]);
+
+      // The old rows survive, and every new column carries its documented default.
+      expect(db.prepare('SELECT id, title FROM threads').get()).toEqual({
+        id: 'thr_old',
+        title: 'Old thread',
+      });
+      expect(db.prepare('SELECT content, attachments FROM messages').get()).toEqual({
+        content: 'old prompt',
+        attachments: null,
+      });
+      expect(
+        db
+          .prepare(
+            'SELECT child_id, type, status, summary, depth, closed_at, footer_status, rework_round FROM subagents',
+          )
+          .get(),
+      ).toEqual({
+        child_id: 'sub_old',
+        type: 'explorer',
+        status: 'done',
+        summary: 'found it',
+        depth: null,
+        closed_at: null,
+        footer_status: null,
+        rework_round: 0,
+      });
+      expect(db.prepare('SELECT text, kind FROM subagent_messages').get()).toEqual({
+        text: 'report',
+        kind: null,
+      });
+      expect(db.prepare('SELECT status, finished_at FROM turns').get()).toEqual({
+        status: 'complete',
+        finished_at: null,
+      });
+      expect(db.prepare('SELECT COUNT(*) AS total FROM projects').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM terminal_sessions').get()?.['total']).toBe(
+        1,
+      );
+      expect(db.prepare('SELECT COUNT(*) AS total FROM mcp_servers').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM brain_entries').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM subagent_reports').get()?.['total']).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds the remote session tables to a database that already holds data', () => {
+    env = createTempEnv();
+    const db = openDb(join(env.root, 'upgrade-remote.db'));
+    try {
+      const now = new Date().toISOString();
+      const remoteMigration = MIGRATIONS.find((entry) => entry.name === 'remote-access');
+      if (remoteMigration === undefined) throw new Error('the remote migration is missing');
+      for (const migration of MIGRATIONS.filter((entry) => entry.name !== 'remote-access')) {
+        db.exec(migration.sql);
+        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+          migration.version,
+          now,
+        );
+      }
+      db.prepare(
+        'INSERT INTO projects (id, name, path, default_branch, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('prj_keep', 'Keep me', 'C:/work/keep', 'main', now);
+      db.prepare(
+        `INSERT INTO threads (id, project_id, title, provider_id, model_id, execution_mode, permission_mode, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('thr_keep', 'prj_keep', 'Existing chat', 'prv_keep', 'model', 'work', 'ask', 'idle', now, now);
+      db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)').run(
+        'theme',
+        JSON.stringify('light'),
+        now,
+      );
+
+      expect(migrate(db)).toEqual([remoteMigration.version]);
+      expect(db.prepare('SELECT name FROM projects WHERE id = ?').get('prj_keep')?.['name']).toBe(
+        'Keep me',
+      );
+      expect(db.prepare('SELECT title FROM threads WHERE id = ?').get('thr_keep')?.['title']).toBe(
+        'Existing chat',
+      );
+      expect(
+        JSON.parse(
+          String(db.prepare('SELECT value FROM settings WHERE key = ?').get('theme')?.['value']),
+        ),
+      ).toBe('light');
+      expect(db.prepare('SELECT COUNT(*) AS n FROM remote_sessions').get()?.['n']).toBe(0);
+      const repos = createRepos(db);
+      expect(repos.remoteSessions.list()).toEqual([]);
+      expect(repos.remoteSessions.tokenFingerprint()).toBeUndefined();
     } finally {
       db.close();
     }

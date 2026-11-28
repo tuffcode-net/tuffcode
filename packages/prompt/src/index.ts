@@ -1,4 +1,4 @@
-export { BASE_SYSTEM_PROMPT, CHILD_BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
+export { BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
 export { TOOL_NAMES, TOOL_SCHEMAS } from './tools';
 export {
   CONFIG_TOOL,
@@ -63,7 +63,6 @@ export {
   ABOUT_USER_HEADING,
   CUSTOM_INSTRUCTIONS_HEADING,
   PROJECT_RULES_HEADING,
-  REVIEW_COMMENTS_HEADING,
   type AssembledPrompt,
   type PromptAssemblyInput,
   type PromptSection,

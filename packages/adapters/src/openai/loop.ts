@@ -28,6 +28,7 @@ import {
   isServerToolOffered,
   isToolDisabled,
   PARALLEL_TOOL_LIMIT,
+  profileAllows,
   RepeatedToolCallGuard,
   resolveToolOptions,
 } from '../tool-policy.js';
@@ -209,11 +210,25 @@ function planToolCall(
       decision: null,
     };
   }
+  // A child's profile is the outer boundary and its verdict is final: a profile-allowed
+  // call must not become an approval, because nothing answers a child's approval.
+  const profiled = ctx.toolProfile !== undefined;
+  if (ctx.toolProfile !== undefined) {
+    const verdict = profileAllows(name, args ?? {}, ctx.toolProfile, ctx.cwd);
+    if (!verdict.allowed) {
+      return {
+        args,
+        parseError,
+        result: { output: verdict.reason, isError: true },
+        decision: null,
+      };
+    }
+  }
   let decision: PermissionDecision;
   if (name === SUBAGENT_TOOL_NAME) {
-    decision = classifySubagentTool(ctx.permissionMode, args ?? {});
+    decision = profiled ? 'allow' : classifySubagentTool(ctx.permissionMode, args ?? {});
   } else if (isExtraToolName(name)) {
-    decision = classifyExtraTool(name, args ?? {}, ctx.permissionMode);
+    decision = profiled ? 'allow' : classifyExtraTool(name, args ?? {}, ctx.permissionMode);
   } else if (!isToolName(name)) {
     return {
       args,
@@ -229,7 +244,7 @@ function planToolCall(
       decision: null,
     };
   } else {
-    decision = classifyTool(name, args ?? {}, ctx.permissionMode);
+    decision = profiled ? 'allow' : classifyTool(name, args ?? {}, ctx.permissionMode);
   }
   if (decision === 'deny') {
     return {
@@ -265,6 +280,7 @@ export async function* runTurn(options: RunTurnOptions): AsyncIterable<AdapterEv
             ...(ctx.maxOutputTokens !== undefined ? { maxTokens: ctx.maxOutputTokens } : {}),
             ...(ctx.toolAllowlist !== undefined ? { toolAllowlist: ctx.toolAllowlist } : {}),
             toolOptions,
+            ...(ctx.toolProfile !== undefined ? { toolProfile: ctx.toolProfile } : {}),
             ...(ctx.reasoningEffort !== undefined ? { reasoningEffort: ctx.reasoningEffort } : {}),
           },
           signal,
