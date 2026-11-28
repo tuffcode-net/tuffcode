@@ -88,7 +88,9 @@ export function AppShell() {
     dockVisible,
   });
   const sidebarShown = sidebar.mode === 'column';
-  const drawerOpen = sidebar.mode === 'drawer';
+  // The drawer is inert only while it is actually open; the phone layout itself must
+  // leave the conversation interactive when the drawer is closed.
+  const drawerOpen = sidebar.mode === 'drawer' && sidebar.open;
   const drawerRef = useRef<HTMLElement | null>(null);
 
   useNotifications();
