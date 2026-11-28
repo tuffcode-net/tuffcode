@@ -43,7 +43,7 @@ export function CouncilPanel({ threadId }: CouncilPanelProps) {
 
   const [goalId, setGoalId] = useState<string | null>(null);
   const [resolving, setResolving] = useState(executionMode === 'council');
-  // The goal the user dismissed with New goal; it stays hidden until a different
+  // The goal the user hid with Hide goal; it stays hidden until a different
   // goal replaces it.
   const dismissedGoal = useRef<string | null>(null);
   const [status, setStatus] = useState<CouncilStatus | null>(null);
@@ -290,7 +290,7 @@ export function CouncilPanel({ threadId }: CouncilPanelProps) {
                   Retry
                 </Button>
                 <Button size="sm" variant="ghost" onClick={handleNewGoal}>
-                  New goal
+                  Hide goal
                 </Button>
               </div>
             </div>
@@ -320,7 +320,7 @@ export function CouncilPanel({ threadId }: CouncilPanelProps) {
               </Button>
               {terminal ? (
                 <Button size="sm" variant="outline" onClick={handleNewGoal}>
-                  New goal
+                  Hide goal
                 </Button>
               ) : null}
             </div>

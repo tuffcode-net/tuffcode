@@ -79,7 +79,7 @@ export function ActivityContext({ threadId, showPrompt }: { threadId: string; sh
     setCompacting(true);
     try {
       await rpc.request('threads.send', { id: threadId, text: '/compact' });
-      toast.success('Compacting the conversation.');
+      toast('Compacting the conversation.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not compact the conversation.');
     } finally {

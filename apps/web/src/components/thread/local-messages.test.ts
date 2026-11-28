@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { LocalUserMessage } from './grouping';
 import {
   addLocalUserMessage,
+  clearLocalUserMessages,
   failLocalUserMessage,
+  hiddenMessageIds,
+  hideLocalUserMessage,
   localUserMessages,
   pruneResolvedLocalUserMessages,
   resolveLocalUserMessage,
@@ -10,6 +13,7 @@ import {
   supersedeTurn,
   supersededTurns,
   updateLocalUserMessageText,
+  withoutHiddenMessages,
 } from './local-messages';
 
 function echo(overrides: Partial<LocalUserMessage> = {}): LocalUserMessage {
@@ -104,6 +108,32 @@ describe('local message status', () => {
     expect(updateLocalUserMessageText(message.id, 'Edited text')).toBe(true);
     expect(localUserMessages(message.threadId)[0]?.text).toBe('Edited text');
     expect(updateLocalUserMessageText('msg_turn-1_user', 'nope')).toBe(false);
+  });
+
+  it('keeps a hidden message out of the timeline across a transcript refetch', () => {
+    const threadId = 'thread-hide';
+    hideLocalUserMessage(threadId, 'msg_turn-9_user');
+
+    const rows = [{ id: 'msg_turn-8_user' }, { id: 'msg_turn-9_user' }];
+    expect(withoutHiddenMessages(rows, hiddenMessageIds(threadId))).toEqual([
+      { id: 'msg_turn-8_user' },
+    ]);
+
+    // A refetch replaces the store rows with fresh objects; the hidden id still filters.
+    const refetched = rows.map((row) => ({ ...row }));
+    expect(withoutHiddenMessages(refetched, hiddenMessageIds(threadId))).toEqual([
+      { id: 'msg_turn-8_user' },
+    ]);
+  });
+
+  it('clears hidden ids even when the thread has no local echo', () => {
+    const threadId = 'thread-clear-hidden';
+    hideLocalUserMessage(threadId, 'msg_turn-3_user');
+    expect(hiddenMessageIds(threadId).size).toBe(1);
+
+    clearLocalUserMessages(threadId);
+
+    expect(hiddenMessageIds(threadId).size).toBe(0);
   });
 
   it('records superseded turns with a new snapshot for subscribers', () => {

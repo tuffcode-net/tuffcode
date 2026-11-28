@@ -54,10 +54,16 @@ interface CommentAnchor {
   side: ReviewCommentSide;
 }
 
+function noPreviewLabel(file: DiffFile): string {
+  if (file.binary) return 'Binary file';
+  if (file.patch === null) return 'Patch too large';
+  return 'No text hunks';
+}
+
 function noPreviewDescription(file: DiffFile): string {
   if (file.binary) return 'This file is binary, so there is no text diff to render.';
   if (file.patch === null) {
-    return 'This patch is too large to render. Open the file in the editor instead.';
+    return 'Open the file in the editor to read the full change.';
   }
   return 'This change has no text hunks to render.';
 }
@@ -80,6 +86,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
   const [checkpointId, setCheckpointId] = useState<string | null>(null);
   const [savingCheckpoint, setSavingCheckpoint] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+  const [commentsToken, setCommentsToken] = useState(0);
   const [files, setFiles] = useState<DiffFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -159,11 +166,9 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
       .request('comments.list', { threadId })
       .then((result) => {
         if (cancelled) return;
-        setComments((previous) => {
-          const byId = new Map(previous.map((comment) => [comment.id, comment]));
-          for (const comment of result) byId.set(comment.id, comment);
-          return [...byId.values()];
-        });
+        // The server list is the truth: a comment deleted or invalidated elsewhere
+        // must disappear here instead of living on in a merged map.
+        setComments(result);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -174,7 +179,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [rpc, threadId, reloadToken]);
+  }, [rpc, threadId, commentsToken]);
 
   const directories = useMemo(() => buildDiffTree(files), [files]);
   const knownPaths = useMemo(() => new Set(files.map((file) => file.path)), [files]);
@@ -184,6 +189,12 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
 
   function reload(): void {
     setReloadToken((token) => token + 1);
+    setCommentsToken((token) => token + 1);
+  }
+
+  /** Only the comment list changed: refetching the diff would flash its spinner. */
+  function reloadComments(): void {
+    setCommentsToken((token) => token + 1);
   }
 
   async function saveCheckpoint(): Promise<void> {
@@ -256,14 +267,17 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
     setSavingComment(true);
     setDraftError(null);
     try {
-      const created = await rpc.request('comments.add', {
+      await rpc.request('comments.add', {
         threadId,
         filePath: draft.path,
         line: draft.line,
         side: draft.side,
         body: draftBody.trim(),
       });
-      setComments((previous) => [...previous, created]);
+      // Refetch instead of appending: an in-flight list request would otherwise wipe
+      // the new row, or a late response would duplicate it. Only the comments changed,
+      // so the diff and checkpoint queries stay untouched.
+      reloadComments();
       setDraft(null);
       setDraftBody('');
     } catch (caught) {
@@ -500,7 +514,8 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             <div className="flex min-h-0 flex-1 items-center px-3">
               <EmptyState
                 variant="inline"
-                title={noPreviewDescription(selectedFile)}
+                title={noPreviewLabel(selectedFile)}
+                description={noPreviewDescription(selectedFile)}
                 className="w-full"
               />
             </div>
@@ -512,9 +527,10 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             <div className="flex min-h-0 flex-1 items-center px-3">
               <EmptyState
                 variant="inline"
-                title={
+                title="No changes"
+                description={
                   checkpointId === null
-                    ? 'No changes; the worktree matches HEAD.'
+                    ? 'The worktree matches HEAD.'
                     : 'Nothing changed since this checkpoint.'
                 }
                 action={
