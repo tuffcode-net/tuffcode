@@ -412,6 +412,11 @@ class CodexAdapter implements AdapterSession {
             type: 'image',
             url: `data:${attachment.mimeType ?? 'image/png'};base64,${attachment.data}`,
           });
+        } else if (attachment.data !== undefined) {
+          input.push({
+            type: 'text',
+            text: `[Image attached: ${attachment.name ?? 'image'} - this model cannot view images]`,
+          });
         } else if (attachment.path !== undefined) {
           input.push({ type: 'localImage', path: attachment.path });
         }

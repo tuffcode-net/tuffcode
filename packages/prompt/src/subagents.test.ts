@@ -1,70 +1,104 @@
 import { describe, expect, it } from 'vitest';
+import type { SubagentType } from '@tuffcode/contracts';
 import {
   SUBAGENT_PROMPTS,
+  SUBAGENT_RUN_MINUTES,
   SUBAGENT_TOOL,
+  SUBAGENT_TOOL_PROFILES,
   SUBAGENT_TYPES,
   buildSubagentMessage,
+  describeToolProfile,
   parseNotetakerFacts,
 } from './subagents';
 
+/** The one sentence each profile must produce; the prompt never writes it by hand. */
+const TOOLS_LINES: Record<SubagentType, string> = {
+  explorer:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  planner:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  reviewer:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search; you may write .md files only.',
+  notetaker:
+    'read and search, read-only shell commands, MCP lookups, web fetch, memory search and notes; you may write .md files only.',
+  worker:
+    'read and search, shell commands, MCP lookups, memory search and notes, web fetch; you may write any file in your worktree.',
+};
+
 describe('subagent prompts', () => {
-  it('has one expanded prompt per type', () => {
+  it('has one compact type body per type', () => {
     for (const type of SUBAGENT_TYPES) {
-      const prompt = SUBAGENT_PROMPTS[type];
-      expect(prompt.length).toBeGreaterThan(600);
-      expect(prompt.length).toBeLessThan(6000);
-    }
-    expect(SUBAGENT_PROMPTS.explorer).toContain('file:line');
-    expect(SUBAGENT_PROMPTS.reviewer).toContain('VERDICT:');
-    expect(SUBAGENT_PROMPTS.notetaker).toContain('"facts"');
-    expect(SUBAGENT_PROMPTS.worker).toContain('worktree');
-    expect(SUBAGENT_PROMPTS.planner).toContain('"tasks"');
-  });
-
-  it('gives every prompt an operating loop, an evidence contract, and a failure contract', () => {
-    for (const type of SUBAGENT_TYPES) {
-      const prompt = SUBAGENT_PROMPTS[type];
-      expect(prompt, type).toContain('Operating loop');
-      expect(prompt, type).toContain('Evidence');
-      expect(prompt, type).toContain('Blocker');
-      expect(prompt, type).toContain('file:line');
-      expect(prompt, type).toMatch(/stop and report|Stop and report/);
+      const words = SUBAGENT_PROMPTS[type].trim().split(/\s+/);
+      expect(words.length, type).toBeGreaterThan(40);
+      expect(words.length, type).toBeLessThan(250);
     }
   });
 
-  it('keeps the explorer read-only and the reviewer non-editing', () => {
-    expect(SUBAGENT_PROMPTS.explorer).toContain('never edit files');
-    expect(SUBAGENT_PROMPTS.explorer).toContain('never run a command that writes to disk');
-    expect(SUBAGENT_PROMPTS.reviewer).toContain('do not edit files');
-    expect(SUBAGENT_PROMPTS.reviewer).toContain('nine points');
+  it('generates the TOOLS line from the profile that enforces it', () => {
+    for (const type of SUBAGENT_TYPES) {
+      expect(describeToolProfile(SUBAGENT_TOOL_PROFILES[type]), type).toBe(TOOLS_LINES[type]);
+      const message = buildSubagentMessage({ type, task: 'Do the work' });
+      expect(message, type).toContain(`TOOLS: ${TOOLS_LINES[type]} Anything else will fail`);
+    }
   });
 
-  it('gives every prompt the blocked protocol', () => {
+  it('never offers shell writing to a read-only profile', () => {
+    expect(describeToolProfile(SUBAGENT_TOOL_PROFILES.explorer)).toContain(
+      'read-only shell commands',
+    );
+    expect(describeToolProfile(SUBAGENT_TOOL_PROFILES.worker)).not.toContain('read-only');
+    expect(describeToolProfile(SUBAGENT_TOOL_PROFILES.explorer)).not.toContain('any file');
+  });
+
+  it('fills every placeholder in the header, body and footer', () => {
     for (const type of SUBAGENT_TYPES) {
-      const prompt = SUBAGENT_PROMPTS[type];
-      expect(prompt, type).toContain(
-        'The task below is all you see; there is no conversation history.',
+      for (const depth of ['quick', 'normal', 'thorough'] as const) {
+        const message = buildSubagentMessage({ type, task: 'Do the work', depth });
+        expect(message, `${type}/${depth}`).not.toMatch(/\{\{/);
+        expect(message, `${type}/${depth}`).toContain(`DEPTH: ${depth}.`);
+        expect(message, `${type}/${depth}`).toContain(
+          `Limit: ${SUBAGENT_RUN_MINUTES[type]} minutes.`,
+        );
+      }
+    }
+  });
+
+  it('shrinks the summary budget at quick depth and keeps 300 words otherwise', () => {
+    const quick = buildSubagentMessage({ type: 'explorer', task: 'Map it', depth: 'quick' });
+    expect(quick).toContain('SUMMARY: 150 words at most');
+    const normal = buildSubagentMessage({ type: 'explorer', task: 'Map it' });
+    expect(normal).toContain('SUMMARY: 300 words at most');
+    const thorough = buildSubagentMessage({ type: 'explorer', task: 'Map it', depth: 'thorough' });
+    expect(thorough).toContain('SUMMARY: 300 words at most');
+  });
+
+  it('gives the planner its JSON contract instead of the shared footer', () => {
+    const planner = buildSubagentMessage({ type: 'planner', task: 'Split the goal' });
+    expect(planner).toContain('"tasks"');
+    expect(planner).toContain('"question"');
+    expect(planner).toContain('1 to 8 tasks');
+    expect(planner).not.toContain('YOUR LAST MESSAGE');
+    for (const type of ['explorer', 'reviewer', 'notetaker', 'worker'] as const) {
+      expect(buildSubagentMessage({ type, task: 'Do the work' })).toContain(
+        'YOUR LAST MESSAGE is the only thing the parent reads:',
       );
-      expect(prompt, type).toContain(
-        'return exactly BLOCKED: <the one missing input> and stop. Do not guess.',
-      );
     }
   });
 
-  it('adds the role specific rules to each prompt', () => {
-    expect(SUBAGENT_PROMPTS.explorer).toContain('the searches that returned nothing');
-    expect(SUBAGENT_PROMPTS.reviewer).toContain("Review the diff, not the author's summary");
-    expect(SUBAGENT_PROMPTS.reviewer).toContain('read every changed file yourself');
-    expect(SUBAGENT_PROMPTS.reviewer).toContain('return both citations');
-    expect(SUBAGENT_PROMPTS.notetaker).toContain('supersedes fact');
-    expect(SUBAGENT_PROMPTS.notetaker).toContain('State the platform');
-    expect(SUBAGENT_PROMPTS.worker).toContain('the brief contradicts the repository');
-    expect(SUBAGENT_PROMPTS.worker).toContain('exact acceptance command');
-    expect(SUBAGENT_PROMPTS.planner).toContain('exact command that proves the task');
-    expect(SUBAGENT_PROMPTS.planner).toContain('not "tests pass"');
+  it('names the worker worktree and branch, and defaults them when unset', () => {
+    const named = buildSubagentMessage({
+      type: 'worker',
+      task: 'Fix the parser',
+      worktree: 'C:/worktrees/thr_1',
+      branch: 'tuffcode/thr_1',
+    });
+    expect(named).toContain('(C:/worktrees/thr_1, branch tuffcode/thr_1)');
+    const bare = buildSubagentMessage({ type: 'worker', task: 'Fix the parser' });
+    expect(bare).not.toMatch(/\{\{/);
+    expect(bare).toContain('the worktree you were given');
   });
 
-  it('puts the role prompt before the task and a bounded context block', () => {
+  it('puts the header first, then the body, then the footer, the task and the context', () => {
     const message = buildSubagentMessage({
       type: 'explorer',
       task: 'Map the runner',
@@ -72,24 +106,40 @@ describe('subagent prompts', () => {
       projectName: 'Demo',
       parentTitle: 'Parent',
     });
-    expect(message.startsWith(SUBAGENT_PROMPTS.explorer)).toBe(true);
-    expect(message).toContain('TASK\nMap the runner');
+    const header = 'You are the explorer subagent working for a parent agent.';
+    expect(message.startsWith(header)).toBe(true);
+    expect(message.indexOf('ROLE: Find where and how something works')).toBeGreaterThan(
+      message.indexOf('TOOLS:'),
+    );
+    expect(message.indexOf('YOUR LAST MESSAGE')).toBeGreaterThan(
+      message.indexOf('ROLE: Find where and how something works'),
+    );
+    expect(message.indexOf('TASK\nMap the runner')).toBeGreaterThan(
+      message.indexOf('YOUR LAST MESSAGE'),
+    );
     expect(message).toContain('project: Demo');
     expect(message).toContain('cwd: C:/worktrees/x');
     expect(message).toContain('parent thread: Parent');
   });
 
-  it('describes the subagent tool with its actions and spawn fields', () => {
+  it('declares the depth parameter on the subagent tool', () => {
     expect(SUBAGENT_TOOL.name).toBe('subagent');
     expect(Object.keys(SUBAGENT_TOOL.parameters.properties)).toEqual([
       'action',
       'id',
       'text',
+      'rework',
+      'question_id',
+      'cursor',
       'timeout_s',
       'type',
       'task',
       'model',
+      'depth',
     ]);
+    expect(SUBAGENT_TOOL.parameters.properties.depth?.description).toContain(
+      'quick, normal or thorough',
+    );
     expect(SUBAGENT_TOOL.parameters.required).toEqual([]);
   });
 });

@@ -82,6 +82,18 @@ test('spawns a child, shows its card under the spawn turn, and opens the pane', 
   await expect(page.getByTestId('subagent-timeline')).toContainText(MOCK_TEXT);
   await expect(page.getByTestId('subagent-pane-status')).toHaveAttribute('data-status', 'done');
 
+  // A reload keeps the child's own turn: the pane replays its durable events.
+  await page.reload();
+  await expect(page.getByTestId('app-shell')).toBeVisible();
+  const replayedStrip = page.getByTestId('subagent-strip');
+  await expect(replayedStrip).toHaveAttribute('data-child-count', '1');
+  await replayedStrip
+    .locator('[data-testid="subagent-strip-finished"], [data-testid="subagent-strip-chip"]')
+    .first()
+    .click();
+  await expect(page.getByTestId('subagent-pane')).toBeVisible();
+  await expect(page.getByTestId('subagent-timeline')).toContainText(MOCK_TEXT);
+
   const shots = process.env['TUFFCODE_E2E_SHOTS'];
   const prefix = process.env['TUFFCODE_E2E_SHOT_PREFIX'] ?? 'subagent';
   if (shots) {

@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { basename } from 'node:path';
 import {
   AdapterUnavailableError,
   type AdapterDeps,
@@ -8,12 +9,14 @@ import {
   type McpServerLaunch,
   type PermissionMode,
   type ProviderConfig,
+  type ToolProfile,
   type TurnContext,
 } from '@tuffcode/contracts';
 import { newId } from '@tuffcode/shared';
 import { redactToolInput } from '../redact.js';
+import { profileAllows, profileOffers } from '../tool-policy.js';
 import { mapSdkMessage, type ClaudeMappingState } from './map.js';
-import { classifyTuffcodeTool, tuffcodeServer } from './tuffcode-tools.js';
+import { classifyTuffcodeTool, claudeHarnessToolName, tuffcodeServer } from './tuffcode-tools.js';
 
 /** Permission modes understood by the Claude Agent SDK. */
 export type ClaudePermissionMode =
@@ -52,6 +55,8 @@ export interface ClaudeQueryOptions {
   pathToClaudeCodeExecutable: string;
   abortController: AbortController;
   allowDangerouslySkipPermissions?: boolean;
+  /** Vendor tools removed from the model's context, which a child's profile drives. */
+  disallowedTools?: string[];
   canUseTool: ClaudeCanUseTool;
   effort?: ClaudeEffort;
   mcpServers?: Record<
@@ -72,6 +77,22 @@ export type ClaudeQueryFn = (params: {
   prompt: string;
   options: ClaudeQueryOptions;
 }) => ClaudeQueryHandle;
+
+/**
+ * The turn text plus one line per attachment. The Claude Agent SDK is driven with a
+ * string prompt here, so inline image bytes cannot reach the model; naming the files
+ * keeps an attachment from vanishing silently, and a worktree path stays readable.
+ */
+export function promptWithAttachments(text: string, ctx: TurnContext): string {
+  if (ctx.attachments.length === 0) return text;
+  const lines = ctx.attachments.map((attachment) => {
+    const name =
+      attachment.name ?? (attachment.path === undefined ? 'attachment' : basename(attachment.path));
+    if (attachment.path !== undefined) return `- ${name}: ${attachment.path}`;
+    return `- ${name} (inline image; this provider cannot receive image bytes)`;
+  });
+  return `${text}\n\nAttachments:\n${lines.join('\n')}`;
+}
 
 /** Test seam: inject a recorded query stream instead of spawning the CLI. */
 export interface ClaudeAdapterOverrides {
@@ -181,8 +202,24 @@ class ClaudeAdapter implements AdapterSession {
     yield { type: 'turn.started', turnId: ctx.turnId };
 
     try {
+      // disallowedTools is the only lever that removes a vendor tool from the model's
+      // list; writeGlobs stays on canUseTool because a vendor list cannot express a path.
+      const vendorLaunches = this.deps.mcpServers?.();
+      const disallowed =
+        ctx.toolProfile === undefined
+          ? []
+          : disallowedToolsForProfile(
+              ctx.toolProfile,
+              ctx.permissionMode,
+              Object.keys(vendorLaunches ?? {}),
+            );
+      const vendorServers =
+        ctx.toolOptions?.mcp === false ||
+        (ctx.toolProfile !== undefined && !profileOffers(ctx.toolProfile, 'mcp'))
+          ? undefined
+          : vendorLaunches;
       const handle = this.queryFn({
-        prompt: text,
+        prompt: promptWithAttachments(text, ctx),
         options: {
           cwd: ctx.cwd,
           ...(ctx.model ? { model: ctx.model } : {}),
@@ -196,7 +233,20 @@ class ClaudeAdapter implements AdapterSession {
           pathToClaudeCodeExecutable: this.executable,
           abortController: turn.controller,
           ...(ctx.permissionMode === 'full-auto' ? { allowDangerouslySkipPermissions: true } : {}),
+          ...(disallowed.length > 0 ? { disallowedTools: disallowed } : {}),
           canUseTool: (toolName, input, options) => {
+            // A child's profile decides first: a refused call never reaches the approval
+            // path, and an allowed one runs, because nothing answers a child's approval.
+            if (ctx.toolProfile !== undefined) {
+              const mapped = claudeHarnessToolName(toolName);
+              if (mapped !== null) {
+                const verdict = profileAllows(mapped, input, ctx.toolProfile, ctx.cwd);
+                if (!verdict.allowed) {
+                  return Promise.resolve({ behavior: 'deny' as const, message: verdict.reason });
+                }
+                return Promise.resolve({ behavior: 'allow' as const });
+              }
+            }
             // Tuffcode's own tools follow the harness ladder: reads and the task list
             // never ask, spawning and stopping children do in ask mode.
             const decision = classifyTuffcodeTool(toolName, input, ctx.permissionMode);
@@ -210,10 +260,7 @@ class ClaudeAdapter implements AdapterSession {
             return this.requestApproval(turn, queue, toolName, input, options);
           },
           ...claudeEffort(ctx.reasoningEffort),
-          ...mcpServerOptions(
-            ctx.toolOptions?.mcp === false ? undefined : this.deps.mcpServers?.(),
-            tuffcodeServer(this.deps, ctx),
-          ),
+          ...mcpServerOptions(vendorServers, tuffcodeServer(this.deps, ctx)),
         },
       });
       turn.query = handle;
@@ -428,6 +475,30 @@ export function claudeEffort(effort: string | undefined): Pick<ClaudeQueryOption
   if (effort === undefined) return {};
   const mapped = effort === 'minimal' ? 'low' : effort;
   return CLAUDE_EFFORTS.has(mapped) ? { effort: mapped as ClaudeEffort } : {};
+}
+
+/**
+ * The vendor tools a child's profile removes from the model's context. `disallowedTools`
+ * is the only option that drops a tool from the list the model sees; the callback below
+ * is the second layer, and the only place a path limit can live. A read-only child maps
+ * to the SDK's `plan` mode, which refuses edits before the callback, so Write and Edit
+ * leave the list there instead of becoming a declined call.
+ */
+function disallowedToolsForProfile(
+  profile: ToolProfile,
+  permissionMode: PermissionMode,
+  vendorServers: readonly string[],
+): string[] {
+  const names: string[] = [];
+  if (profile.writeGlobs === undefined || permissionMode === 'read-only') {
+    names.push('Write', 'Edit');
+  }
+  if (profile.bash === 'none') names.push('Bash');
+  // Server-level specs name the vendor servers only, so the in-process `tuffcode`
+  // server stays reachable: a child still needs subagent:report even when it may not
+  // call a vendor MCP tool.
+  if (!profileOffers(profile, 'mcp')) names.push(...vendorServers.map((name) => 'mcp__' + name));
+  return names;
 }
 
 /**

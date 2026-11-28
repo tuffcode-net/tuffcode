@@ -5,6 +5,7 @@ import type {
   ServerEvent,
   TurnContext,
 } from '@tuffcode/contracts';
+import { SUBAGENT_TOOL_PROFILES } from '@tuffcode/prompt';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createEventBus, type EventBus } from '../events.js';
 import { createSecretBridge } from '../secrets/bridge.js';
@@ -14,7 +15,9 @@ import { createRunner, type Runner } from './runner.js';
 import {
   HANDOFF_HEADING,
   buildHandoffDigest,
+  handoffChildren,
   isCouncilThread,
+  subagentChildFor,
   turnReasoningEffort,
   turnToolPolicy,
 } from './turn-options.js';
@@ -61,6 +64,83 @@ describe('handoff digest', () => {
     expect(digest).toContain('...');
     expect(digest.length).toBeLessThan(1000);
   });
+
+  it('keeps one line per child so a compaction cannot lose a report', () => {
+    const messages = Array.from({ length: 40 }, (_, index) =>
+      message(index % 2 === 0 ? 'user' : 'assistant', `message number ${index} ${'x'.repeat(200)}`, index),
+    );
+    const digest =
+      buildHandoffDigest(messages, 400, [
+        { childId: 'sub_one', type: 'explorer', status: 'done', reportId: 'srep_one' },
+        { childId: 'sub_two', type: 'reviewer', status: 'running', reportId: null },
+        { childId: 'sub_three', type: 'worker', status: 'failed', reportId: 'srep_three' },
+      ]) ?? '';
+    expect(digest).toContain('sub_one explorer done report srep_one');
+    expect(digest).toContain('sub_two reviewer running report none');
+    expect(digest).toContain('sub_three worker failed report srep_three');
+    // The child lines are reserved, so the message budget is what shrinks.
+    expect(Math.ceil(digest.length / 4)).toBeLessThanOrEqual(520);
+  });
+
+  it('drops the oldest child first when the children alone exceed the budget', () => {
+    const children = Array.from({ length: 40 }, (_, index) => ({
+      childId: `sub_${String(index).padStart(2, '0')}`,
+      type: 'explorer' as const,
+      status: 'done' as const,
+      reportId: null,
+    }));
+    const digest = buildHandoffDigest([], 120, children) ?? '';
+    expect(digest).toContain('sub_39 explorer done report none');
+    expect(digest).not.toContain('sub_00 explorer done report none');
+  });
+
+  it('keeps every child id of a real thread in the digest', () => {
+    const ctx = createTestContext();
+    try {
+      const now = new Date().toISOString();
+      ctx.repos.projects.add({
+        id: 'prj_1',
+        name: 'Demo',
+        path: 'C:/demo',
+        defaultBranch: 'main',
+        createdAt: now,
+      });
+      ctx.repos.threads.create({
+        id: 'thr_parent',
+        projectId: 'prj_1',
+        parentThreadId: null,
+        title: 'Parent thread',
+        providerId: 'prv_1',
+        modelId: 'model-x',
+        executionMode: 'work',
+        permissionMode: 'ask',
+        status: 'idle',
+        worktreePath: 'C:/worktrees/parent',
+        branch: 'tuffcode/thr_parent',
+        baseBranch: 'main',
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (const childId of ['sub_one', 'sub_two', 'sub_three']) {
+        ctx.repos.subagents.create({
+          childId,
+          threadId: 'thr_parent',
+          type: 'explorer',
+          providerId: 'prv_1',
+          model: 'model-x',
+          status: 'queued',
+          task: `task ${childId}`,
+          createdAt: now,
+        });
+      }
+      const digest = buildHandoffDigest([], 3000, handoffChildren(ctx.repos, 'thr_parent')) ?? '';
+      expect(digest).toContain('sub_one explorer queued report none');
+      expect(digest).toContain('sub_two explorer queued report none');
+      expect(digest).toContain('sub_three explorer queued report none');
+    } finally {
+      ctx.dispose();
+    }
+  });
 });
 
 describe('turn tool policy', () => {
@@ -83,6 +163,54 @@ describe('turn tool policy', () => {
     const council = turnToolPolicy({ settings: narrowed, council: true });
     expect(council.toolAllowlist).toBeUndefined();
     expect(Object.values(council.toolOptions).every(Boolean)).toBe(true);
+  });
+
+  it('carries a child profile through unchanged and leaves it unset otherwise', () => {
+    const settings = ctx.repos.settings.get();
+    const profile = SUBAGENT_TOOL_PROFILES.explorer;
+    expect(turnToolPolicy({ settings, council: false, profile }).profile).toBe(profile);
+    expect(turnToolPolicy({ settings, council: true, profile }).profile).toBe(profile);
+    expect(turnToolPolicy({ settings, council: false }).profile).toBeUndefined();
+  });
+
+  it('finds the subagent row behind a child thread', () => {
+    ctx.repos.projects.add({
+      id: 'prj_sub',
+      name: 'p',
+      path: ctx.env.root,
+      defaultBranch: 'main',
+      createdAt: ISO,
+    });
+    ctx.repos.threads.create({
+      id: 'thr_parent',
+      projectId: 'prj_sub',
+      parentThreadId: null,
+      title: 'parent',
+      providerId: 'prv',
+      modelId: 'm',
+      executionMode: 'work',
+      permissionMode: 'full-auto',
+      status: 'idle',
+      worktreePath: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: ISO,
+      updatedAt: ISO,
+    });
+    ctx.repos.subagents.create({
+      childId: 'sub_1',
+      threadId: 'thr_parent',
+      type: 'explorer',
+      providerId: 'prv',
+      model: 'm',
+      status: 'queued',
+      task: 'map it',
+      createdAt: ISO,
+    });
+    expect(subagentChildFor(ctx.repos, 'thr_parent')).toBeUndefined();
+    ctx.repos.subagents.setRunning('sub_1', 'thr_child', ISO);
+    expect(subagentChildFor(ctx.repos, 'thr_child')?.childId).toBe('sub_1');
+    expect(subagentChildFor(ctx.repos, 'thr_parent')).toBeUndefined();
   });
 
   it('prefers the thread reasoning level over the provider default', () => {

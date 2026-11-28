@@ -7,7 +7,7 @@
  * adapter never receives. Everything except the user message is joined into the system
  * prompt; the user message travels as the turn text.
  */
-import { BASE_SYSTEM_PROMPT } from './base';
+import { BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
 import { buildTurnContext, estimateTokens, type TurnContextInput } from './context';
 import { buildCustomInstructions, buildPersonalSection, type PersonalProfile, type ResponseStyleName } from './custom';
 
@@ -22,6 +22,7 @@ const AVAILABLE_SKILLS_HEADING = '## Available skills';
 
 export type PromptSectionName =
   | 'base'
+  | 'plan-mode'
   | 'about-user'
   | 'custom-instructions'
   | 'project-rules'
@@ -62,6 +63,10 @@ export interface AssembledPrompt {
   sections: PromptSection[];
   /** Every section except the user message, in assembly order. */
   systemPrompt: string;
+  /** The head that does not change per turn: base through the skills list. */
+  staticPrefix: string;
+  /** Brain, retrieved memory and turn context, which can change every turn. */
+  dynamicPrompt: string;
   /** Tokens across all sections, the user message included. */
   total: number;
 }
@@ -79,6 +84,11 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
   const available = input.availableSkills?.trim() ?? '';
 
   const sections = [section('base', BASE_SYSTEM_PROMPT)];
+  // Plan mode is a mode, not a default: shipping its rubric on a work turn both costs
+  // tokens and tells the model not to build.
+  if (input.turnContext.mode === 'plan') {
+    sections.push(section('plan-mode', PLAN_MODE_PROMPT));
+  }
   const personal =
     input.profile === undefined ? undefined : buildPersonalSection(input.profile, input.responseStyle);
   if (personal !== undefined) {
@@ -115,12 +125,23 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
   sections.push(section('turn-context', buildTurnContext(input.turnContext)));
   sections.push(section('user-message', input.userMessage));
 
+  const systemSections = sections.filter((entry) => entry.name !== 'user-message');
+  // Only base, plan mode, the profile and custom instructions are stable per thread.
+  // Project rules with globs, skill mentions, the available-skill list and everything
+  // from the brain on are message-dependent, so they must sit after the cache breakpoint.
+  const splitAt = systemSections.findIndex((entry) =>
+    ['project-rules', 'skills', 'available-skills', 'brain-always', 'retrieved-memory', 'turn-context'].includes(
+      entry.name,
+    ),
+  );
+  const staticSections = splitAt === -1 ? systemSections : systemSections.slice(0, splitAt);
+  const dynamicSections = splitAt === -1 ? [] : systemSections.slice(splitAt);
+
   return {
     sections,
-    systemPrompt: sections
-      .filter((entry) => entry.name !== 'user-message')
-      .map((entry) => entry.text)
-      .join('\n\n'),
+    systemPrompt: systemSections.map((entry) => entry.text).join('\n\n'),
+    staticPrefix: staticSections.map((entry) => entry.text).join('\n\n'),
+    dynamicPrompt: dynamicSections.map((entry) => entry.text).join('\n\n'),
     total: sections.reduce((sum, entry) => sum + entry.tokens, 0),
   };
 }

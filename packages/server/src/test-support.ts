@@ -23,19 +23,24 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 /**
- * Isolated `TUFFCODE_HOME` and `LOCALAPPDATA` under a fresh temp directory, so the
- * database, token, server.json and worktrees never touch the developer's real state.
+ * Isolated `TUFFCODE_HOME`, `LOCALAPPDATA` and `XDG_DATA_HOME` under a fresh temp
+ * directory, so the database, token, server.json, worktrees and attachment store never
+ * touch the developer's real state on any platform.
  */
 export function createTempEnv(): TempEnv {
   const root = mkdtempSync(join(tmpdir(), 'tuffcode-server-'));
   const home = join(root, 'home');
   const localAppData = join(root, 'local');
+  const xdgData = join(root, 'xdg');
   mkdirSync(home, { recursive: true });
   mkdirSync(localAppData, { recursive: true });
+  mkdirSync(xdgData, { recursive: true });
   const previousHome = process.env.TUFFCODE_HOME;
   const previousLocal = process.env.LOCALAPPDATA;
+  const previousXdg = process.env.XDG_DATA_HOME;
   process.env.TUFFCODE_HOME = home;
   process.env.LOCALAPPDATA = localAppData;
+  process.env.XDG_DATA_HOME = xdgData;
   return {
     root,
     home,
@@ -43,6 +48,7 @@ export function createTempEnv(): TempEnv {
     dispose: () => {
       restoreEnv('TUFFCODE_HOME', previousHome);
       restoreEnv('LOCALAPPDATA', previousLocal);
+      restoreEnv('XDG_DATA_HOME', previousXdg);
       rmSync(root, { recursive: true, force: true });
     },
   };

@@ -13,6 +13,7 @@ import {
   estimateContext,
   HARNESS_HISTORY_EVENT_LIMIT,
   harnessToolOutputs,
+  imageTokens,
   type ContextSectionInput,
   type ContextUsage,
 } from './usage.js';
@@ -32,13 +33,26 @@ export interface MeasuredContext extends ContextUsage {
 export function measureContext(
   repos: Repos,
   thread: Thread,
-  sections: readonly ContextSectionInput[],
+  sectionsInput: readonly ContextSectionInput[],
   options: MeasureContextOptions = {},
 ): MeasuredContext {
   const limits = options.limits ?? threadLimits(repos, thread, repos.settings.get());
-  const messages = repos.messages
-    .list(thread.id)
-    .filter((message) => message.id !== options.excludeMessageId);
+  const all = repos.messages.list(thread.id);
+  // The current user message travels in the prompt sections as text, so its row is
+  // excluded from the conversation half. Its images still cost tokens, so they are
+  // charged to the user-message section instead of disappearing from the estimate.
+  const current = options.excludeMessageId === undefined
+    ? undefined
+    : all.find((message) => message.id === options.excludeMessageId);
+  const extraImages = imageTokens(current?.attachments);
+  const sections = extraImages === 0
+    ? sectionsInput
+    : sectionsInput.map((section) =>
+        section.name === 'user-message'
+          ? { ...section, tokens: section.tokens + extraImages }
+          : section,
+      );
+  const messages = all.filter((message) => message.id !== options.excludeMessageId);
   const harnessHistory = harnessToolOutputs(
     repos.events.since(thread.id, 0, HARNESS_HISTORY_EVENT_LIMIT),
   );

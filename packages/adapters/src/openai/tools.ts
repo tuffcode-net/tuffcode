@@ -13,6 +13,7 @@ import {
   SUBAGENT_TOOL_NAME,
   TOOL_NAMES,
   isSubagentAction,
+  isSubagentDepth,
   isSubagentType,
   type ToolName,
 } from '@tuffcode/prompt';
@@ -146,6 +147,15 @@ const DESTRUCTIVE_COMMANDS: readonly RegExp[] = [
   /\bgit\s+push\b[^\n]*--force/i,
   /\bshutdown\b/i,
 ];
+
+/**
+ * Whether a command matches the destructive list: a whole-drive or home removal, a
+ * format, diskpart, a forced push, or a shutdown. A worker profile refuses these
+ * outright, because no approval arrives to answer them.
+ */
+export function isDestructiveCommand(command: string): boolean {
+  return DESTRUCTIVE_COMMANDS.some((pattern) => pattern.test(command));
+}
 
 /** Known actions per extra tool; anything else is refused rather than guessed at. */
 const EXTRA_TOOL_ACTIONS: Record<ExtraToolName, readonly string[]> = {
@@ -438,8 +448,7 @@ export function classifyTool(
   if (mode === 'ask') return 'approve';
   if (mode === 'accept-edits') return name === 'bash' ? 'approve' : 'allow';
   if (name === 'bash' && typeof args.command === 'string') {
-    const command = args.command;
-    if (DESTRUCTIVE_COMMANDS.some((pattern) => pattern.test(command))) return 'approve';
+    if (isDestructiveCommand(args.command)) return 'approve';
   }
   return 'allow';
 }
@@ -1065,8 +1074,16 @@ export function classifySubagentTool(
 ): PermissionDecision {
   const action = typeof args.action === 'string' ? args.action : 'spawn';
   if (!isSubagentAction(action)) return 'deny';
-  // Reading status, waiting and reading reports change nothing; a report only posts a note.
-  if (action === 'status' || action === 'wait' || action === 'inbox' || action === 'report') {
+  // Reading status, waiting, reading reports and asking a question change nothing:
+  // ask posts one blocking question to the parent, and read only pages reports.
+  if (
+    action === 'status' ||
+    action === 'wait' ||
+    action === 'inbox' ||
+    action === 'report' ||
+    action === 'ask' ||
+    action === 'read'
+  ) {
     return 'allow';
   }
   if (mode === 'read-only') return 'deny';
@@ -1085,7 +1102,9 @@ async function subagentTool(
 ): Promise<ToolExecResult> {
   const action = typeof args.action === 'string' && args.action.length > 0 ? args.action : 'spawn';
   if (!isSubagentAction(action)) {
-    return fail('action must be one of spawn, status, wait, message, stop, inbox, report');
+    return fail(
+      'action must be one of spawn, status, wait, message, stop, inbox, report, ask, answer, close, read',
+    );
   }
   if (action !== 'spawn') {
     if (deps.subagentControl === undefined) {
@@ -1098,6 +1117,15 @@ async function subagentTool(
       typeof args.timeout_s === 'number' && Number.isFinite(args.timeout_s)
         ? args.timeout_s
         : undefined;
+    const questionId =
+      typeof args.question_id === 'string' && args.question_id.trim().length > 0
+        ? args.question_id.trim()
+        : undefined;
+    const cursor =
+      typeof args.cursor === 'string' && args.cursor.trim().length > 0
+        ? args.cursor.trim()
+        : undefined;
+    const rework = args.rework === true;
     try {
       const output = await deps.subagentControl({
         action,
@@ -1105,7 +1133,10 @@ async function subagentTool(
         ...(ctx.threadId === undefined ? {} : { threadId: ctx.threadId }),
         ...(id === undefined ? {} : { id }),
         ...(text === undefined ? {} : { text }),
+        ...(rework ? { rework } : {}),
         ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
+        ...(questionId === undefined ? {} : { questionId }),
+        ...(cursor === undefined ? {} : { cursor }),
         signal: ctx.signal,
       });
       return ok(capOutput(output));
@@ -1122,6 +1153,9 @@ async function subagentTool(
   if (typeof args.task !== 'string' || args.task.trim().length === 0) {
     return fail('task must be a non-empty string');
   }
+  if (args.depth !== undefined && !isSubagentDepth(args.depth)) {
+    return fail('depth must be quick, normal or thorough');
+  }
   const model = typeof args.model === 'string' ? args.model.trim() : '';
   try {
     const spawned = await deps.spawnSubagent({
@@ -1130,6 +1164,7 @@ async function subagentTool(
       type: args.type,
       task: args.task,
       ...(model.length === 0 ? {} : { model }),
+      ...(isSubagentDepth(args.depth) ? { depth: args.depth } : {}),
     });
     return ok(
       `subagent ${spawned.childId} (${args.type}) ${spawned.status}. Call subagent with action wait to collect its summary, status to check progress, or message to steer it.`,

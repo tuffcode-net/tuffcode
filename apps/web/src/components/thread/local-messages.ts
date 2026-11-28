@@ -69,9 +69,16 @@ export function removeLocalUserMessage(messageId: string): void {
   }
 }
 
-/** The server accepted the send: the echo now carries the turn it started. */
-export function resolveLocalUserMessage(messageId: string, turnId: string): void {
-  updateMessage(messageId, (message) => ({ ...message, turnId, status: 'sent' }));
+/**
+ * The server accepted the send: the echo now carries the turn it started. A queued
+ * send already has its turn id, but that turn only runs once the live one settles.
+ */
+export function resolveLocalUserMessage(messageId: string, turnId: string, queued = false): void {
+  updateMessage(messageId, (message) => ({
+    ...message,
+    turnId,
+    status: queued ? 'queued' : 'sent',
+  }));
 }
 
 /** The send RPC rejected: keep the text so the bubble can offer a retry. */

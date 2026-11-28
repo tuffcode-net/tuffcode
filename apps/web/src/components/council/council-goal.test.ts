@@ -1,6 +1,12 @@
-import { DEFAULT_SETTINGS, type RpcResult, type Task, type TaskState } from '@tuffcode/contracts';
+import {
+  DEFAULT_SETTINGS,
+  councilAutonomy,
+  type RpcResult,
+  type Task,
+  type TaskState,
+} from '@tuffcode/contracts';
 import { describe, expect, it } from 'vitest';
-import { autonomyFromSettings, councilSummary } from './council-goal';
+import { councilSummary } from './council-goal';
 
 const CREATED = '2026-01-01T00:00:00.000Z';
 
@@ -83,16 +89,14 @@ describe('councilSummary', () => {
   });
 });
 
-describe('autonomyFromSettings', () => {
+describe('councilAutonomy', () => {
   it('leaves the decision to the captain unless the default permission is full auto', () => {
-    expect(autonomyFromSettings(null)).toBe('manual');
-    expect(autonomyFromSettings({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'ask' })).toBe(
-      'manual',
-    );
+    expect(councilAutonomy(null)).toBe('manual');
+    expect(councilAutonomy({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'ask' })).toBe('manual');
     expect(
-      autonomyFromSettings({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'accept-edits' }),
+      councilAutonomy({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'accept-edits' }),
     ).toBe('manual');
-    expect(autonomyFromSettings({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'full-auto' })).toBe(
+    expect(councilAutonomy({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'full-auto' })).toBe(
       'auto',
     );
   });

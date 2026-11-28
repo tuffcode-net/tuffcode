@@ -221,9 +221,9 @@ export function UserBubble({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {item.attachments.map((attachment, index) => (
                   <span
-                    key={`${attachment.path}-${index}`}
+                    key={`${attachment.id ?? attachment.path ?? attachment.name}-${index}`}
                     className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs text-muted-foreground"
-                    title={attachment.path}
+                    title={attachment.path ?? attachment.mimeType ?? 'attachment'}
                   >
                     {attachment.name}
                   </span>
@@ -252,6 +252,10 @@ export function UserBubble({
           <span className="flex items-center gap-1 text-2xs text-muted-foreground">
             <Spinner size="sm" label="Sending" />
             Sending
+          </span>
+        ) : item.status === 'queued' ? (
+          <span data-testid="user-message-queued" className="text-2xs text-muted-foreground">
+            Queued
           </span>
         ) : null}
       </div>
@@ -854,7 +858,9 @@ export function NoticeRow({ item }: { item: NoticeItem }) {
         'flex items-start gap-2 rounded-md border px-2.5 py-2 text-xs leading-5',
         item.tone === 'error'
           ? 'border-error/40 bg-error-surface text-error-foreground'
-          : 'border-border bg-muted text-muted-foreground',
+          : item.tone === 'warning'
+            ? 'border-warning/40 bg-warning-surface text-warning-foreground'
+            : 'border-border bg-muted text-muted-foreground',
       )}
     >
       <Icon aria-hidden="true" strokeWidth={1.75} className="mt-0.5 size-3.5 shrink-0" />

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTempEnv, type TempEnv } from '../test-support.js';
-import { migrate, openDb, transaction } from './index.js';
+import { MIGRATIONS, migrate, openDb, transaction } from './index.js';
 
 describe('db migrations', () => {
   let env: TempEnv | undefined;
@@ -15,12 +15,12 @@ describe('db migrations', () => {
     env = createTempEnv();
     const db = openDb(join(env.root, 'tuffcode.db'));
     try {
-      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
       expect(migrate(db)).toEqual([]);
 
       const versions = db.prepare('SELECT version FROM schema_migrations').all();
-      expect(versions).toHaveLength(11);
-      expect(versions.map((row) => row['version'])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+      expect(versions).toHaveLength(16);
+      expect(versions.map((row) => row['version'])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 
       expect(db.prepare('PRAGMA journal_mode').get()?.['journal_mode']).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1);
@@ -51,6 +51,7 @@ describe('db migrations', () => {
         'terminal_sessions',
         'turns',
         'subagents',
+        'subagent_reports',
         'mcp_servers',
       ]) {
         expect(tables).toContain(table);
@@ -131,6 +132,163 @@ describe('db migrations', () => {
         .all();
       expect(remaining).toHaveLength(1);
       expect(remaining[0]).toEqual({ id: 'mcp_two', args: '[]', env: '{}', enabled: 1 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a populated version 11 database without losing a row', () => {
+    env = createTempEnv();
+    const db = openDb(join(env.root, 'tuffcode.db'));
+    const now = new Date().toISOString();
+    try {
+      // Build the schema the previous release shipped, row by row, the way a user's
+      // database looks when the five new migrations arrive.
+      const older = MIGRATIONS.filter((migration) => migration.version <= 11);
+      expect(older).toHaveLength(11);
+      for (const migration of older) {
+        db.exec(migration.sql);
+        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+          migration.version,
+          now,
+        );
+      }
+      const insert = (sql: string, ...values: (string | null)[]) =>
+        db.prepare(sql).run(...values);
+      insert(
+        'INSERT INTO projects (id, name, path, default_branch, created_at) VALUES (?, ?, ?, ?, ?)',
+        'prj_old',
+        'Old project',
+        env.root,
+        'main',
+        now,
+      );
+      insert(
+        'INSERT INTO threads (id, project_id, parent_thread_id, title, provider_id, model_id, execution_mode, permission_mode, status, worktree_path, branch, base_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'thr_old',
+        'prj_old',
+        null,
+        'Old thread',
+        'prv_old',
+        'model-old',
+        'work',
+        'full-auto',
+        'ready-to-review',
+        env.root,
+        'tuffcode/thr_old',
+        'main',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)',
+        'msg_old',
+        'thr_old',
+        'user',
+        'old prompt',
+        now,
+      );
+      insert(
+        'INSERT INTO subagents (child_id, thread_id, child_thread_id, type, provider_id, model, status, task, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'sub_old',
+        'thr_old',
+        null,
+        'explorer',
+        'prv_old',
+        'model-old',
+        'done',
+        'explore it',
+        'found it',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO subagent_messages (id, child_id, direction, text, created_at) VALUES (?, ?, ?, ?, ?)',
+        'smsg_old',
+        'sub_old',
+        'to-parent',
+        'report',
+        now,
+      );
+      insert(
+        'INSERT INTO turns (id, thread_id, status, injected_ids, created_at) VALUES (?, ?, ?, ?, ?)',
+        'turn_old',
+        'thr_old',
+        'complete',
+        '[]',
+        now,
+      );
+      insert(
+        'INSERT INTO terminal_sessions (id, thread_id, cwd, shell, created_at) VALUES (?, ?, ?, ?, ?)',
+        'term_old',
+        'thr_old',
+        env.root,
+        'bash',
+        now,
+      );
+      insert(
+        'INSERT INTO mcp_servers (id, label, command, args, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'mcp_old',
+        'Old server',
+        'node',
+        '[]',
+        now,
+        now,
+      );
+      insert(
+        'INSERT INTO brain_entries (id, kind, scope, text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'brain_old',
+        'rule',
+        'global',
+        'always test',
+        now,
+        now,
+      );
+
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16]);
+      // A second start must be a no-op, not a re-run that fails on an existing column.
+      expect(migrate(db)).toEqual([]);
+
+      // The old rows survive, and every new column carries its documented default.
+      expect(db.prepare('SELECT id, title FROM threads').get()).toEqual({
+        id: 'thr_old',
+        title: 'Old thread',
+      });
+      expect(db.prepare('SELECT content, attachments FROM messages').get()).toEqual({
+        content: 'old prompt',
+        attachments: null,
+      });
+      expect(
+        db
+          .prepare(
+            'SELECT child_id, type, status, summary, depth, closed_at, footer_status, rework_round FROM subagents',
+          )
+          .get(),
+      ).toEqual({
+        child_id: 'sub_old',
+        type: 'explorer',
+        status: 'done',
+        summary: 'found it',
+        depth: null,
+        closed_at: null,
+        footer_status: null,
+        rework_round: 0,
+      });
+      expect(db.prepare('SELECT text, kind FROM subagent_messages').get()).toEqual({
+        text: 'report',
+        kind: null,
+      });
+      expect(db.prepare('SELECT status, finished_at FROM turns').get()).toEqual({
+        status: 'complete',
+        finished_at: null,
+      });
+      expect(db.prepare('SELECT COUNT(*) AS total FROM projects').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM terminal_sessions').get()?.['total']).toBe(
+        1,
+      );
+      expect(db.prepare('SELECT COUNT(*) AS total FROM mcp_servers').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM brain_entries').get()?.['total']).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS total FROM subagent_reports').get()?.['total']).toBe(0);
     } finally {
       db.close();
     }

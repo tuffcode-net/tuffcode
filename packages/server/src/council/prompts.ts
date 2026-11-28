@@ -4,6 +4,7 @@ import {
   COUNCIL_REVIEWER_PROMPT,
   COUNCIL_WORKER_BRIEF_TEMPLATE,
 } from '@tuffcode/prompt';
+import { COUNCIL_CAPS } from './caps.js';
 import type { PlanTask } from './types.js';
 
 const MAX_PROMPT_PATCH_CHARS = 80_000;
@@ -18,10 +19,12 @@ export interface PlannerPromptInput {
   projectName: string;
   projectPath: string;
   baseBranch: string;
+  /** Set when the captain sent the previous plan back; the planner revises that plan. */
+  revision?: { round: number; feedback: string };
 }
 
 export function buildPlannerPrompt(input: PlannerPromptInput): string {
-  return [
+  const lines = [
     COUNCIL_PLANNER_PROMPT,
     '',
     'GOAL',
@@ -32,7 +35,18 @@ export function buildPlannerPrompt(input: PlannerPromptInput): string {
     '',
     'BASE BRANCH',
     input.baseBranch,
-  ].join('\n');
+  ];
+  if (input.revision !== undefined) {
+    lines.push(
+      '',
+      'REVISION',
+      `Round ${input.revision.round} of ${COUNCIL_CAPS.planRevisions}: the captain rejected the previous plan.`,
+      'CAPTAIN FEEDBACK',
+      input.revision.feedback.trim(),
+      'Return a corrected plan in the same JSON shape. Change only what the feedback asks for.',
+    );
+  }
+  return lines.join('\n');
 }
 
 export interface WorkerBriefInput {
@@ -56,7 +70,7 @@ export function buildWorkerBrief(input: WorkerBriefInput): string {
     project_path: input.projectPath,
     base_branch: input.baseBranch,
     issue_ref: `council goal ${input.goalId}`,
-    worktree_path: input.worktreePath,
+    worktree: input.worktreePath,
     branch: input.branch,
     goal: input.goal,
     context: `Task ${input.taskIndex + 1} of ${input.taskCount}. You own: ${input.task.files.join(', ')}. Other council workers own every other path; do not touch them.`,
@@ -83,6 +97,10 @@ export function buildWorkerBrief(input: WorkerBriefInput): string {
 export interface ReviewPromptInput {
   task: PlanTask;
   prUrl: string;
+  /**
+   * Kept for the call site only. The reviewer never reads the worker's own claims of
+   * success: the check it runs itself is the evidence.
+   */
   workerReport: string;
   patch: string;
 }
@@ -107,9 +125,6 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     'PULL REQUEST',
     input.prUrl,
     '',
-    'WORKER REPORT',
-    input.workerReport,
-    '',
     'DIFF',
     patch,
   ].join('\n');
@@ -118,14 +133,50 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 export interface RevisionBriefInput {
   round: number;
   findings: string;
+  /** The pull request or branch under review, when the caller knows it. */
+  prUrlOrBranch?: string;
+  /** The check the worker must rerun; the brief's own check when unset. */
+  check?: string;
 }
 
 export function buildRevisionBrief(input: RevisionBriefInput): string {
+  const target = input.prUrlOrBranch?.trim();
+  const check = input.check?.trim();
   return [
-    `REVIEW ROUND ${input.round} REQUESTED CHANGES`,
-    input.findings,
+    `REWORK ROUND ${input.round} OF ${COUNCIL_CAPS.reviewRounds} for ${target === undefined || target.length === 0 ? 'the same branch and pull request' : target}`,
+    'A review of your change found these problems. Fix each one and change nothing else.',
+    input.findings.trim(),
+    '(each: [severity] path:line: what is wrong. Expected: what correct looks like)',
     '',
-    'Address every numbered finding without widening scope. Keep the same branch, commit, and push again. Council reopens the review when you finish.',
+    `Then rerun: ${check === undefined || check.length === 0 ? 'the check from your brief' : check}`,
+    'Commit to the same branch so the pull request updates, and reply with one line per finding: "N fixed at path:line" or "N not fixed: reason".',
+  ].join('\n');
+}
+
+export interface CaptainRevisionInput {
+  /** The escalation question the reviewer or the round cap raised. */
+  question: string;
+  /** What the captain wants changed. */
+  feedback: string;
+}
+
+/**
+ * The turn a captain answer sends to an escalated task's existing child thread. It
+ * carries both the question and the feedback, because the worker never saw either.
+ */
+export function buildCaptainRevisionBrief(input: CaptainRevisionInput): string {
+  return [
+    'CAPTAIN REVISION for the same branch and pull request',
+    'A reviewer escalated this task and the captain asked for one more change. Address the captain feedback and change nothing else.',
+    '',
+    'ESCALATION',
+    input.question.trim(),
+    '',
+    'CAPTAIN FEEDBACK',
+    input.feedback.trim(),
+    '',
+    'Then rerun the check from your brief.',
+    'Commit to the same branch so the pull request updates, and reply with one line per change.',
   ].join('\n');
 }
 

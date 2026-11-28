@@ -11,6 +11,7 @@ export {
 export {
   currentBranch,
   detectDefaultBranch,
+  hasUncommittedWork,
   isGitRepo,
   provisionWorktree,
   removeWorktree,

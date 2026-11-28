@@ -1,7 +1,9 @@
+import { matchesGlob, relative, resolve } from 'node:path';
 import type {
   AdapterDeps,
   ExtraToolName,
   PermissionMode,
+  ToolProfile,
   TurnContext,
   TurnToolOptions,
 } from '@tuffcode/contracts';
@@ -13,7 +15,8 @@ import {
   type ToolName,
   type ToolSchema,
 } from '@tuffcode/prompt';
-import { classifyTool } from './openai/tools.js';
+import { resolveWithin } from '@tuffcode/shared';
+import { classifyTool, isDestructiveCommand, isReadOnlyCommand } from './openai/tools.js';
 
 /** A file tool, the delegation tool, or a server-owned extra tool. */
 export type HarnessToolSchema =
@@ -85,28 +88,171 @@ export function isServerToolOffered(name: string, options: TurnToolOptions): boo
 
 export { NO_SERVER_TOOLS };
 
+/** Whether a profile offers a tool at all: by bare name, or by one of its named actions. */
+export function profileOffers(profile: ToolProfile, name: string): boolean {
+  return profile.offer.some((entry) => entry === name || entry.startsWith(name + ':'));
+}
+
+/** A short quote of a model-supplied value, so one runaway argument cannot bloat a message. */
+function quoted(value: string): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return '"' + (flat.length <= 120 ? flat : flat.slice(0, 117) + '...') + '"';
+}
+
+/** The cwd-relative forward-slash label of a path inside cwd, or null when it escapes. */
+function relativeLabel(cwd: string, target: string): string | null {
+  let resolved: string;
+  try {
+    resolved = resolveWithin(cwd, target);
+  } catch {
+    return null;
+  }
+  const label = relative(resolve(cwd), resolved).replace(/\\/g, '/');
+  return label.length === 0 || label.startsWith('../') ? null : label;
+}
+
+/** The schema with the profile's limits spelled out; never mutates the shared TOOL_SCHEMAS. */
+function shapeForProfile(
+  schema: HarnessToolSchema,
+  profile: ToolProfile | undefined,
+): HarnessToolSchema {
+  if (profile === undefined) return schema;
+  if (schema.name === 'bash' && profile.bash === 'read-only') {
+    return {
+      ...schema,
+      description:
+        schema.description + ' Read-only commands only; anything that writes is refused.',
+    };
+  }
+  if (schema.name === 'write' || schema.name === 'edit') {
+    const globs = profile.writeGlobs ?? [];
+    if (globs.length === 0) return schema;
+    return {
+      ...schema,
+      description:
+        schema.description + ' You may write only these paths: ' + globs.join(', ') + '.',
+    };
+  }
+  return schema;
+}
+
 /**
  * The harness tools a turn may offer. An unset allowlist means every file tool, which
  * keeps a context built without settings on the pre-settings behaviour. The subagent
  * and extra tools are separate from the allowlist on purpose: `enabledTools` lists file
  * tools, and delegation or server tools must not disappear because the user narrowed
- * that list.
+ * that list. A profile narrows what is left: a tool it does not offer is never shown,
+ * so a child never spends a turn on a call that would be refused.
  */
 export function allowedToolSchemas(
   allowlist?: readonly string[],
   options: ToolListOptions = {},
+  profile?: ToolProfile,
 ): readonly HarnessToolSchema[] {
-  const tools: HarnessToolSchema[] =
+  const listed: HarnessToolSchema[] =
     allowlist === undefined
       ? [...TOOL_SCHEMAS]
       : TOOL_SCHEMAS.filter((schema) => allowlist.includes(schema.name));
+  const tools =
+    profile === undefined
+      ? listed
+      : listed.filter((schema) => profileOffers(profile, schema.name));
   // Callers that only say `extra` mean the original three tools, mcp included.
   const offered = { ...NO_SERVER_TOOLS, ...options, mcp: options.mcp ?? options.extra === true };
-  if (offered.subagent) tools.push(SUBAGENT_TOOL);
-  for (const schema of EXTRA_TOOL_SCHEMAS) {
-    if (isServerToolOffered(schema.name, offered)) tools.push(schema);
+  const shaped = tools.map((schema) => shapeForProfile(schema, profile));
+  if (offered.subagent && (profile === undefined || profileOffers(profile, SUBAGENT_TOOL_NAME))) {
+    shaped.push(SUBAGENT_TOOL);
   }
-  return tools;
+  for (const schema of EXTRA_TOOL_SCHEMAS) {
+    if (!isServerToolOffered(schema.name, offered)) continue;
+    if (profile !== undefined && !profileOffers(profile, schema.name)) continue;
+    shaped.push(schema);
+  }
+  return shaped;
+}
+
+/** The verdict for one call: allowed, or refused with the reason the model is told. */
+export type ProfileVerdict = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Whether a profile lets one call run. The profile is the outer boundary: a tool it does
+ * not offer is refused by name, an extra tool offered by action must match that action,
+ * bash follows the profile's command rule, and write and edit must land inside the
+ * profile's globs. Glob matching is case-insensitive on every platform, so an uppercase
+ * README.MD still matches a Markdown glob, and a path outside cwd never matches.
+ * Every other tool is allowed.
+ */
+export function profileAllows(
+  name: string,
+  args: Record<string, unknown>,
+  profile: ToolProfile,
+  cwd: string,
+): ProfileVerdict {
+  if (!profileOffers(profile, name)) {
+    return { allowed: false, reason: 'tool "' + name + '" is not offered to this agent' };
+  }
+  if (name === 'bash') {
+    if (profile.bash === 'none') {
+      return { allowed: false, reason: 'bash is not offered to this agent' };
+    }
+    const command = typeof args.command === 'string' ? args.command : '';
+    if (profile.bash === 'read-only' && !isReadOnlyCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          'bash only runs read-only commands for this agent; ' + quoted(command) + ' is refused',
+      };
+    }
+    if (profile.bash === 'worktree' && isDestructiveCommand(command)) {
+      return {
+        allowed: false,
+        reason:
+          'bash refuses destructive commands for this agent; ' + quoted(command) + ' is refused',
+      };
+    }
+    return { allowed: true };
+  }
+  if (name === 'write' || name === 'edit') {
+    const target = typeof args.path === 'string' ? args.path : '';
+    const globs = profile.writeGlobs ?? [];
+    const label = target.length === 0 ? null : relativeLabel(cwd, target);
+    // Glob matching is case-insensitive on every platform, so README.MD matches **/*.md.
+    const candidate = label?.toLowerCase() ?? null;
+    const matched =
+      candidate !== null &&
+      globs.some((glob) => matchesGlob(candidate, glob.replace(/\\/g, '/').toLowerCase()));
+    if (!matched) {
+      const limit = globs.length === 0 ? 'no paths' : 'only these paths: ' + globs.join(', ');
+      return {
+        allowed: false,
+        reason: name + ' may touch ' + limit + '; ' + quoted(target) + ' is refused',
+      };
+    }
+    return { allowed: true };
+  }
+  const prefix = name + ':';
+  const actions = profile.offer
+    .filter((entry) => entry.startsWith(prefix))
+    .map((entry) => entry.slice(prefix.length));
+  if (actions.length > 0 && !profile.offer.includes(name)) {
+    const given = typeof args.action === 'string' ? args.action : args.op;
+    // The subagent tool defaults to spawn when the model names no action.
+    const requested =
+      typeof given === 'string' && given.length > 0
+        ? given
+        : name === SUBAGENT_TOOL_NAME
+          ? 'spawn'
+          : '';
+    if (!actions.includes(requested)) {
+      const asked =
+        requested.length === 0 ? 'no action was given' : quoted(requested) + ' is not offered';
+      return {
+        allowed: false,
+        reason: name + ' only offers these actions: ' + actions.join(', ') + '; ' + asked,
+      };
+    }
+  }
+  return { allowed: true };
 }
 
 /** True when settings disabled this tool, so a call must be answered with an error. */

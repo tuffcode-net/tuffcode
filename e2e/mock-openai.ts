@@ -43,8 +43,13 @@ export const MOCK_COUNCIL_PLAN = {
   question: null,
 };
 
-/** First line of the planner prompt; no worker or reviewer prompt carries it. */
-const PLANNER_MARKER = 'You are the planner for a council of coding agents';
+/**
+ * The council planner prompt carries this role line plus an uppercase BASE BRANCH
+ * block. The subagent planner shares the role line but gets no BASE BRANCH block, and
+ * no worker or reviewer prompt carries either.
+ */
+const PLANNER_MARKER = 'ROLE: Turn one goal into the smallest set of tasks';
+const PLANNER_BASE_MARKER = '\nBASE BRANCH\n';
 export const MOCK_ACTIVITY_COMMAND = 'node -e "console.log(\'activity-ok\')"';
 export const MOCK_ACTIVITY_FINAL = 'The activity command printed its line.';
 export const MOCK_INTERLEAVE_REASONING_ONE = 'First I check the readme.';
@@ -63,6 +68,10 @@ export interface MockOpenAI {
   readonly baseUrl: string;
   readonly port: number;
   readonly requests: number;
+  /** The last user prompt of every chat request, in arrival order. */
+  readonly prompts: readonly string[];
+  /** Every parsed chat body, so a test can assert images and tools on the wire. */
+  readonly bodies: readonly Record<string, unknown>[];
   close(): Promise<void>;
 }
 
@@ -222,7 +231,12 @@ function lastRole(messages: ChatMessage[], role: string): string {
   return '';
 }
 
-async function handleChat(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleChat(
+  request: IncomingMessage,
+  response: ServerResponse,
+  recordPrompt: (prompt: string) => void,
+  recordBody: (body: Record<string, unknown>) => void,
+): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const part of request) {
     chunks.push(Buffer.isBuffer(part) ? part : Buffer.from(part));
@@ -244,8 +258,10 @@ async function handleChat(request: IncomingMessage, response: ServerResponse): P
 
   const messages = messagesOf(body);
   const prompt = lastRole(messages, 'user');
+  recordPrompt(prompt);
+  recordBody(body as Record<string, unknown>);
   // Council mode asks its planner for one JSON object; the plan is the whole answer.
-  if (prompt.includes(PLANNER_MARKER)) {
+  if (prompt.includes(PLANNER_MARKER) && prompt.includes(PLANNER_BASE_MARKER)) {
     await streamText(response, JSON.stringify(MOCK_COUNCIL_PLAN));
     response.end();
     return;
@@ -393,6 +409,8 @@ async function handleChat(request: IncomingMessage, response: ServerResponse): P
 
 export async function startMockOpenAI(): Promise<MockOpenAI> {
   let requests = 0;
+  const prompts: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
     requests += 1;
@@ -404,7 +422,16 @@ export async function startMockOpenAI(): Promise<MockOpenAI> {
       return;
     }
     if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
-      void handleChat(request, response).catch(() => {
+      void handleChat(
+        request,
+        response,
+        (prompt) => {
+          prompts.push(prompt);
+        },
+        (body) => {
+          bodies.push(body);
+        },
+      ).catch(() => {
         response.destroy();
       });
       return;
@@ -419,6 +446,12 @@ export async function startMockOpenAI(): Promise<MockOpenAI> {
     port,
     get requests() {
       return requests;
+    },
+    get prompts() {
+      return prompts;
+    },
+    get bodies() {
+      return bodies;
     },
     close: () => {
       server.closeAllConnections();

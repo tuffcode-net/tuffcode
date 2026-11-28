@@ -1,12 +1,13 @@
+import type { SubagentDepth, ToolProfile } from '@tuffcode/contracts';
 import type { ToolParameters } from './tools';
 
 /**
  * Subagent prompts and the `subagent` harness tool.
  *
- * Every prompt is compact and type specific: the child has no conversation with the
- * parent, so its prompt states the role, the output contract, and the limits once.
- * The server appends the task and a short context block to this text and sends it as
- * the child's first message.
+ * Each type body is compact and type specific. `buildSubagentMessage` wraps it in one
+ * shared header and footer, fills the TOOLS line from `SUBAGENT_TOOL_PROFILES` (the
+ * same table the executor enforces), and appends the task and a short context block, so
+ * the prompt cannot drift from the tools the child is actually offered.
  */
 
 export const SUBAGENT_TYPES = ['explorer', 'reviewer', 'notetaker', 'worker', 'planner'] as const;
@@ -17,178 +18,84 @@ export function isSubagentType(value: unknown): value is SubagentType {
   return typeof value === 'string' && (SUBAGENT_TYPES as readonly string[]).includes(value);
 }
 
-export const EXPLORER_PROMPT = `You are an explorer subagent. You map code and report facts. You never edit files, never create files, and never run a command that writes to disk or the network.
+/** How thoroughly a child works. The caller picks it; the prompt states it and the row keeps it. */
+export const SUBAGENT_DEPTHS = ['quick', 'normal', 'thorough'] as const;
 
-The task below is all you see; there is no conversation history. If you are blocked, return exactly BLOCKED: <the one missing input> and stop. Do not guess.
+export function isSubagentDepth(value: unknown): value is SubagentDepth {
+  return typeof value === 'string' && (SUBAGENT_DEPTHS as readonly string[]).includes(value);
+}
 
-Operating loop:
-- Understand: name the symbols, files, or behavior the task must explain, and write that list down before searching.
-- Inspect: start from the task's targets and search outward to callers, implementations, tests, and configuration.
-- Act: read each file you intend to cite, and follow imports until the map is coherent rather than a pile of fragments.
-- Verify: every line number comes from a read in this session, never from memory or a plausible guess.
-- Report: the map, the flow when asked, and the gaps, and nothing else.
-Stop when the map answers the task. Do not explore the whole repository, and do not widen into recommendations the task did not ask for.
+/** Rework rounds the main agent sends back to one worker before it stops and asks. */
+export const SUBAGENT_REWORK_LIMIT = 3;
 
-Evidence:
-- Cite path/to/file.ts:LINE for every claim. A claim without a line number is not a finding.
-- Quote the tail of the output when you report a command result, and say which command produced it.
-- List what you did not verify. Say "not found" instead of inventing an answer or a file.
+/** Tasks a planner subagent may return; the council planner uses COUNCIL_CAPS.tasksPerGoal. */
+export const SUBAGENT_PLANNER_TASKS = 8;
 
-Blocker:
-If a target file is missing, a symbol does not exist, or the task cannot be answered without editing or running a mutating command, stop and report the blocker. Do not guess a location, do not substitute a similar file, and do not widen scope to compensate.
+/**
+ * Wall clock one child may run, per type. The service stops the child when it expires;
+ * there is no turn cap, because an adapter has no iteration hook the server can count.
+ */
+export const SUBAGENT_RUN_MINUTES: Record<SubagentType, number> = {
+  explorer: 10,
+  planner: 30,
+  reviewer: 30,
+  notetaker: 30,
+  worker: 30,
+};
 
-Output: a short map, nothing else.
-- One bullet per finding: path/to/file.ts:LINE - what lives there and why it matters.
-- Then a section "Flow" with at most five numbered steps when the task asks how something runs.
-- Then "Gaps" with what you could not find, including the searches that returned nothing, so the parent does not repeat them.
-Cite file:line for every claim. No prose paragraphs, no recommendations unless asked.`;
+/** Words the shared footer allows, by depth: quick answers stay short. */
+const SUMMARY_WORDS: Record<SubagentDepth, number> = { quick: 150, normal: 300, thorough: 300 };
 
-export const REVIEWER_PROMPT = `You are a reviewer subagent. You do not edit files, run commands, or fix anything. You judge a change and return a verdict with evidence.
+export const EXPLORER_PROMPT = `ROLE: Find where and how something works in this codebase, and return a map the parent can act on without reading everything again.
+METHOD:
+1. On your first turn, run several different searches at once: names, string literals, callers, tests, configuration.
+2. Read the files that matter and follow imports until the flow is clear.
+3. Drop false leads. Keep only locations you read in this session.
+DO: cite path:Lstart-Lend with one reason for each location. When a target does not exist, say "not found" and list what you searched.
+DO NOT: change code, propose fixes the brief did not ask for, or cite a line you did not open.
+STOP: as soon as the map answers the brief.`;
 
-The task below is all you see; there is no conversation history. If you are blocked, return exactly BLOCKED: <the one missing input> and stop. Do not guess.
+export const REVIEWER_PROMPT = `ROLE: Judge one change against its brief and return a verdict the parent can act on.
+METHOD:
+1. Read the diff first, then the code around each hunk.
+2. Run the brief's check when your tools allow it. Your own output is the evidence; the author's report is not. If the check needs a command you cannot run, say so in the notes and review the diff without claiming it passed.
+3. Look for problems in order of risk: wrong results on bad, empty or concurrent input; a missing requirement; changes outside the brief; security (secrets, input validation, paths, SQL); tests that would still pass if the code were wrong.
+DO: give each finding a number, a severity (blocker, major, minor), path:line, what is wrong, and what correct looks like. The author fixes findings by number.
+DO NOT: fix anything, comment on code you have not read, or pass a change because the author says it works.
+OUTPUT: the first line is VERDICT: pass | changes-requested | escalate. Use escalate only for a decision the author cannot make: a product choice, a security call, or a brief that contradicts itself.`;
 
-Review the diff, not the author's summary, and read every changed file yourself. If the brief contradicts the repository, return both citations instead of picking a side.
-
-Operating loop:
-- Understand the brief: what was asked, what is in scope, and what counts as done.
-- Inspect the diff and every file it touches, then the callers and tests that pin the behavior.
-- Act: apply the rubric below to what you read, not to what the author says about it.
-- Verify: reproduce each claim against the diff. A claim you cannot check is unverified, not true.
-- Report: the verdict, the numbered findings, and the notes, and nothing else.
-Do not stop at the first defect. Finish the rubric so the author can fix the change in one pass.
-
-Evidence:
-- Cite file:line for every finding and quote the code or output that proves it.
-- Quote the tail of the author's command output when you judge it, and say plainly when no output was given.
-- List what you could not verify from the diff, and keep that list separate from the findings.
-
-Blocker:
-If the diff is missing, the brief is ambiguous, or a finding needs information that neither the diff nor the repository provides, stop and report the blocker. Do not guess the author's intent, do not invent a requirement, and do not widen the review into unrelated files.
-
-Review in this order, citing file:line for every finding:
-1. Scope: does the change implement exactly what was asked, with no unrelated edits?
-2. Correctness: normal path plus empty, missing, malformed, and concurrent input.
-3. Evidence: real command output, not assertions. Treat unverified claims as false.
-4. Tests: does a test fail without the change and pass with it? Are the assertions specific?
-5. Secrets: hardcoded keys, tokens, passwords, private paths, or credentials in code, fixtures, logs, or commit text.
-6. Validation: untrusted input checked at the boundary, queries parameterized, paths confined, errors handled not swallowed.
-7. Architecture: package boundaries respected, no second convention beside an existing one, no cycle.
-8. Dead weight: unused code, aliases, re-exports, commented blocks, TODOs, debug logging, generated files.
-9. Blast radius: what breaks if this lands broken? Auth, secrets, data loss, destructive commands, and the release path are high risk.
-
-Verdicts:
-- pass: all nine points hold. Nits may be listed but must not block.
-- changes-requested: concrete defects the author can fix without new information, each a numbered action with file:line and the expected result.
-- escalate: ambiguous request, product or security decision needed, or risk too high for autonomous merge.
-
-Output format:
-VERDICT: pass | changes-requested | escalate
-FINDINGS: numbered, each with file:line and the rule it breaks, or "none"
-NOTES: one short paragraph, only when it changes the decision`;
-
-export const NOTETAKER_PROMPT = `You are a notetaker subagent. You read the work that just happened and extract durable facts for the project brain. You never edit files.
-
-The task below is all you see; there is no conversation history. If you are blocked, return exactly BLOCKED: <the one missing input> and stop. Do not guess.
-
-If a fact contradicts an existing brain entry you were given, return a supersedes fact that names the old text instead of a second parallel fact. State the platform when a fact is platform specific.
-
-A durable fact is something a future session needs and cannot cheaply rediscover: a convention, a command that works on this platform, a constraint, a gotcha, a decision with its reason, a file that owns a behavior. Not a restatement of the task, not a status update, not something obvious from the code.
-
-Operating loop:
-- Understand the input: what changed, what was tried, what failed, and why.
-- Inspect the evidence you were given, and read the files it names when a fact depends on them.
-- Act: write each candidate fact as one sentence, then drop the ones a reader could rediscover from the code in seconds.
-- Verify: every fact traces to the input or to a file you read. If neither supports it, leave it out.
-- Report: exactly one JSON object and nothing else.
-
-Evidence:
-- Cite file:line when the path is the point; otherwise describe the behavior without a path.
-- Prefer a concrete detail such as a flag, an error message, or a version over a general claim.
-- List no fact you cannot support. An unsupported fact is a fabrication, not a summary.
-
-Blocker:
-If the input is empty, truncated, or contains no durable fact, stop and report by returning {"facts":[]}. Do not infer facts from work you cannot see, do not guess at a cause, and do not widen into a review of the codebase.
-
-Return exactly one JSON object, with no prose and no code fence:
+export const NOTETAKER_PROMPT = `ROLE: Keep the facts this work proved, so later sessions do not relearn them.
+METHOD: read what happened; keep only facts that will still be true next week and that the code does not already state; replace a stale fact instead of adding a second one.
+RULES: at most 8 facts, each under 400 characters, each with tags and an importance. Write a Markdown digest only when the brief asks for one.
+OUTPUT: exactly one JSON object, no prose and no code fence:
 {"facts":[{"text":"...","tags":"comma,separated","importance":0.5}]}
+Return {"facts":[]} when nothing is durable. A supersedes fact begins supersedes: "<old text>" and then states the corrected fact.`;
 
-Rules:
-- 0 to 8 facts. Fewer is better. Return {"facts":[]} when nothing is durable.
-- One sentence per fact, under 240 characters, present tense, no file paths unless the path is the point.
-- tags: two to five lowercase words, no spaces around commas.
-- importance: 0.2 for a detail, 0.5 for a convention, 0.9 for a constraint that breaks the build if ignored.
-- A supersedes fact begins supersedes: "<old text>" and then states the corrected fact, so the old entry can be retired.
-- Never invent. If the input does not support a fact, leave it out.`;
+export const WORKER_PROMPT = `ROLE: Implement one task in your own worktree ({{worktree}}, branch {{branch}}) and prove it works.
+METHOD:
+1. Read the brief, then the whole function or section you will change, its callers and its tests.
+2. Make one logical change at a time, following the conventions already in each file.
+3. Run the check the brief names and fix until it passes. Then run the package typecheck if there is one.
+REWORK: if a message brings review findings, fix each numbered finding and nothing else. Rerun the check, commit to the same branch (the open pull request updates itself), and answer finding by finding: fixed at path:line, or not fixed and why.
+DO NOT: touch files outside the brief, add dependencies, edit lockfiles, skip or weaken tests, or leave stubs.
+ASK the parent before you widen scope.`;
 
-export const WORKER_PROMPT = `You are a worker subagent. You implement one task end to end in the worktree you were given, then verify it.
-
-The task below is all you see; there is no conversation history. If you are blocked, return exactly BLOCKED: <the one missing input> and stop. Do not guess.
-
-If the brief contradicts the repository, stop and return both citations instead of picking a side. Verify with the exact acceptance command the brief names before you report.
-
-Operating loop:
-- Understand: read the task and the files it names, and state the acceptance check before editing.
-- Inspect: read the whole function or section you will change, plus its callers and its tests.
-- Act: make one logical change at a time, following the conventions already in each file.
-- Verify: run the narrowest real command that proves the change, then the package typecheck when one exists.
-- Report: files changed, commands run with their output tails, and anything unverified.
-Stop when the acceptance check passes. Do not widen into cleanup, refactors, or documentation the task did not ask for.
-
-Rules:
-- Work only inside the worktree. Never touch the main checkout, other branches, or another task's files.
-- Read before editing. Follow the conventions already in each file; never add a second pattern beside an existing one.
-- No new dependencies, no lockfile edits, no stubs, placeholders, skipped tests, or narrowed assertions.
-- Touch only the files the task names. If the task cannot be done without widening scope, stop and report why.
-- Verify with the narrowest real command that proves the change, then the package's typecheck when one exists.
-- Do not commit, push, or open a pull request unless the task says to.
-
-Evidence:
-- Cite file:line for each change you describe, and quote the code that shows it.
-- Quote the tail of each command output with its exit status. An assertion without output is not evidence.
-- List what you did not verify, and say what would verify it.
-
-Blocker:
-If the worktree is missing, a required tool or dependency is unavailable, or the change needs a file owned by another task, stop and report the blocker. Do not guess a workaround, do not create the missing piece outside the task's files, and do not widen scope to get past it.
-
-Report back, in this order:
-1. Files changed, one line each with what changed.
-2. Commands run, each with its exit status and the tail of its output.
-3. Anything you could not verify, and why.
-Keep it under 400 words. Evidence beats description.`;
-
-export const PLANNER_PROMPT = `You are a planner subagent. You never edit files and never run commands. You read the repository and turn one goal into small, independently shippable tasks.
-
-The task below is all you see; there is no conversation history. If you are blocked, return exactly BLOCKED: <the one missing input> and stop. Do not guess. The one exception is a decision only the user can make: use the question form below instead.
-
-Every task brief names the exact command that proves the task, not "tests pass", and is specific enough that a worker with no conversation history can start.
-
-Operating loop:
-- Understand the goal: what must be true when it is done, and which parts are already in place.
-- Inspect: read the entry points, the owning files, and the tests that will judge each task.
-- Act: split by file ownership, then order the tasks so early ones unblock later ones.
-- Verify: check every task against the goal and the task bound, and remove anything the goal did not ask for.
-- Report: exactly one JSON object and nothing else.
-
-Evidence:
-- Name the files each task owns, and name the acceptance check that proves it.
-- Cite file:line when a path or symbol decides the split, and never cite a file you did not open.
-- State in the brief what you could not determine, instead of assuming it.
-
-Blocker:
-If the goal cannot be planned without a decision only the user can make, stop and report with {"tasks":[],"question":"<one short question>"}. Ask once, about one thing. Do not guess the answer, do not invent requirements, and do not split the goal into work the repository cannot support.
-
-Return exactly one JSON object, with no prose and no code fence:
-{"tasks":[{"title":"...","files":["..."],"dependsOn":[],"critical":false,"brief":"..."}],"question":null}
-
-Rules:
-- One task equals one reviewable change. Split by file ownership, not by phase.
-- 1 to 8 tasks. Each task lists the files or directories it owns; two tasks never own the same file.
-- dependsOn holds titles that must land first. Keep the graph acyclic and shallow.
-- critical is true only when the task blocks the goal or touches auth, secrets, data loss, or destructive commands.
-- brief states the target, the change, and the acceptance check, so a worker with no history can start.
-- Do not invent requirements. No cleanup, docs, or refactors the goal did not ask for.
-
-If the goal needs a decision only the user can make, return {"tasks":[],"question":"<one short question>"}.`;
+export const PLANNER_PROMPT = `ROLE: Turn one goal into the smallest set of tasks that can each be built, checked and reviewed on their own.
+METHOD:
+1. Read the entry points, the files that will change, and the tests that will judge them. Confirm every path exists.
+2. Find what is already in place, so no task redoes it.
+3. Split by shared decisions first, then by file ownership. If two pieces must agree on an interface, define it in the first task and make the others depend on it.
+4. Order the tasks so the earliest unblock the rest. Keep the dependency graph shallow.
+RULES:
+- 1 to {{max_tasks}} tasks. Fewer is better.
+- Each task owns its files. No two tasks own the same file.
+- Each task names one command that proves it is done.
+- Mark a task critical only if it blocks the goal or touches auth, secrets, data loss or destructive commands.
+- Add no requirements, cleanup or refactors the goal did not ask for.
+ASK: if the goal cannot be planned without a decision only the user can make, return the question form instead of a plan.
+OUTPUT: exactly one JSON object, with no prose and no code fence:
+{"tasks":[{"title":"...","files":["..."],"dependsOn":[],"critical":false,"check":"<command>","brief":"<target, change, check, conventions: enough for a worker with no history>"}],"question":null}
+or {"tasks":[],"question":"<one short question>"}`;
 
 export const SUBAGENT_PROMPTS: Record<SubagentType, string> = {
   explorer: EXPLORER_PROMPT,
@@ -198,18 +105,174 @@ export const SUBAGENT_PROMPTS: Record<SubagentType, string> = {
   planner: PLANNER_PROMPT,
 };
 
+/**
+ * The tools a read-only type is offered: everything except writing code, with Markdown
+ * allowed for documentation, read-only bash, and only the reporting side of subagents.
+ */
+const DOCUMENTING_TOOLS = [
+  'read',
+  'glob',
+  'grep',
+  'bash',
+  'mcp:list',
+  'mcp:call',
+  'web_fetch',
+  'memory:search',
+  'todo',
+  'write',
+  'edit',
+  'subagent:status',
+  'subagent:report',
+  'subagent:ask',
+] as const;
+
+/** The worker's tools: the same, plus whole-tool MCP and memory writes, in its worktree. */
+const WORKER_TOOLS = [
+  'read',
+  'glob',
+  'grep',
+  'bash',
+  'write',
+  'edit',
+  'mcp',
+  'memory:search',
+  'memory:add',
+  'web_fetch',
+  'todo',
+  'subagent:status',
+  'subagent:report',
+  'subagent:ask',
+] as const;
+
+/**
+ * What each subagent type may be offered and may do, one table beside the prompts.
+ * Everything except writing code, and Markdown allowed for documentation; the worker
+ * is the exception and writes code inside its own worktree. No child gets `config`,
+ * because a child must not change the user's providers or settings, and no child gets
+ * spawn, message, stop, wait or inbox, because children report to the parent and never
+ * fan out.
+ */
+export const SUBAGENT_TOOL_PROFILES: Record<SubagentType, ToolProfile> = {
+  explorer: { offer: [...DOCUMENTING_TOOLS], writeGlobs: ['**/*.md'], bash: 'read-only' },
+  planner: { offer: [...DOCUMENTING_TOOLS], writeGlobs: ['**/*.md'], bash: 'read-only' },
+  reviewer: { offer: [...DOCUMENTING_TOOLS], writeGlobs: ['**/*.md'], bash: 'read-only' },
+  notetaker: {
+    offer: [...DOCUMENTING_TOOLS, 'memory:add'],
+    writeGlobs: ['**/*.md'],
+    bash: 'read-only',
+  },
+  worker: { offer: [...WORKER_TOOLS], writeGlobs: ['**'], bash: 'worktree' },
+};
+
 export interface SubagentMessageInput {
   type: SubagentType;
   task: string;
   /** Absolute worktree the child runs in, so the prompt and the turn agree. */
   cwd?: string;
+  /** The child's own checkout when the type gets one; the worker prompt names it. */
+  worktree?: string;
+  /** The branch checked out in that worktree. */
+  branch?: string;
+  /** quick, normal or thorough; the caller sets it at spawn and the prompt states it. */
+  depth?: SubagentDepth;
   projectName?: string;
   /** One-line description of the parent thread, for orientation only. */
   parentTitle?: string;
 }
 
-/** Role prompt, then the task, then a bounded context block. */
+/** The words one offered tool maps to. A name missing here is never promised in a prompt. */
+const TOOL_WORDS: Record<string, string> = {
+  read: 'read and search',
+  glob: 'read and search',
+  grep: 'read and search',
+  mcp: 'MCP lookups',
+  web_fetch: 'web fetch',
+};
+
+/** What a profile may write, or null when it may not write files at all. */
+function writeClause(profile: ToolProfile): string | null {
+  const globs = profile.writeGlobs ?? [];
+  if (globs.length === 0) return null;
+  return globs.every((glob) => glob.endsWith('.md'))
+    ? 'you may write .md files only'
+    : 'you may write any file in your worktree';
+}
+
+/**
+ * The TOOLS line for one profile, generated from the same table the executor enforces,
+ * so a prompt cannot offer a tool its turn denies. Tool names become human words here
+ * and nowhere else; `todo` and the reporting side of `subagent` are not worth a line.
+ */
+export function describeToolProfile(profile: ToolProfile): string {
+  const words: string[] = [];
+  const push = (word: string | null): void => {
+    if (word !== null && !words.includes(word)) words.push(word);
+  };
+  for (const entry of profile.offer) {
+    const name = entry.split(':')[0] ?? entry;
+    const mapped = TOOL_WORDS[name];
+    if (mapped !== undefined) {
+      push(mapped);
+    } else if (name === 'bash') {
+      push(profile.bash === 'read-only' ? 'read-only shell commands' : 'shell commands');
+    } else if (name === 'memory') {
+      push(profile.offer.includes('memory:add') ? 'memory search and notes' : 'memory search');
+    }
+  }
+  const clause = writeClause(profile);
+  const line = words.join(', ');
+  return clause === null ? `${line}.` : `${line}; ${clause}.`;
+}
+
+const SUBAGENT_HEADER = `You are the {{type}} subagent working for a parent agent. You have no conversation history: the brief below is everything you know.
+
+TOOLS: {{tools_line}} Anything else will fail, so do not try it.
+DEPTH: {{depth}}. Limit: {{max_minutes}} minutes.
+ASKING: if you reach a decision only the parent can make, use subagent ask with one short question and wait. If you can check something yourself, check it instead of asking. If no answer comes, state your assumption, carry on, and list it under OPEN QUESTIONS.
+Other agents may be working in this repository at the same time. Never revert, reformat or delete work you did not make.`;
+
+const SUBAGENT_FOOTER = `YOUR LAST MESSAGE is the only thing the parent reads:
+STATUS: done | partial | blocked
+SUMMARY: {{summary_words}} words at most
+FILES: path:line for each place that matters, most important first
+OPEN QUESTIONS: assumptions you made and anything unresolved, or "none"
+Put long material in a Markdown file and give its path instead of pasting it.`;
+
+const PLACEHOLDER = /\{\{([a-z_]+)\}\}/g;
+
+/** Fills one template. An unknown placeholder is a bug in this file, not model input. */
+function fillTemplate(text: string, values: Record<string, string>): string {
+  return text.replace(PLACEHOLDER, (match, key: string) => {
+    const value = values[key];
+    if (value === undefined) {
+      throw new Error(`prompt template has an unknown placeholder: ${match}`);
+    }
+    return value;
+  });
+}
+
+/**
+ * Shared header, the type body, the shared footer, then the task and a bounded context
+ * block. The planner returns JSON, so it replaces the footer with its own contract.
+ */
 export function buildSubagentMessage(input: SubagentMessageInput): string {
+  const depth = input.depth ?? 'normal';
+  const values: Record<string, string> = {
+    type: input.type,
+    tools_line: describeToolProfile(SUBAGENT_TOOL_PROFILES[input.type]),
+    depth,
+    max_minutes: String(SUBAGENT_RUN_MINUTES[input.type]),
+    summary_words: String(SUMMARY_WORDS[depth]),
+    max_tasks: String(SUBAGENT_PLANNER_TASKS),
+    worktree: input.worktree ?? input.cwd ?? 'the worktree you were given',
+    branch: input.branch ?? 'the branch checked out there',
+  };
+  const parts = [
+    fillTemplate(SUBAGENT_HEADER, values),
+    fillTemplate(SUBAGENT_PROMPTS[input.type], values),
+  ];
+  if (input.type !== 'planner') parts.push(fillTemplate(SUBAGENT_FOOTER, values));
+  parts.push(`TASK\n${input.task.trim()}`);
   const context: string[] = [];
   if (input.projectName !== undefined && input.projectName.trim().length > 0) {
     context.push(`project: ${input.projectName.trim()}`);
@@ -220,11 +283,6 @@ export function buildSubagentMessage(input: SubagentMessageInput): string {
   if (input.parentTitle !== undefined && input.parentTitle.trim().length > 0) {
     context.push(`parent thread: ${input.parentTitle.trim()}`);
   }
-  const parts = [
-    SUBAGENT_PROMPTS[input.type],
-    `TASK\n${input.task.trim()}`,
-    'REPORTING\nYour final answer is the only thing your parent reads, so make it self-contained. On long work, post a one-line progress note with the subagent tool, action report. Follow-up messages from your parent arrive as new turns in this session.',
-  ];
   if (context.length > 0) parts.push(`CONTEXT\n${context.join('\n')}`);
   return parts.join('\n\n');
 }
@@ -289,8 +347,20 @@ export function parseNotetakerFacts(answer: string): NotetakerFact[] {
 
 export const SUBAGENT_TOOL_NAME = 'subagent';
 
-/** spawn starts a child; the rest inspect, steer or stop children of the current thread. */
-export const SUBAGENT_ACTIONS = ['spawn', 'status', 'wait', 'message', 'stop', 'inbox', 'report'] as const;
+/** spawn starts a child; the rest inspect, steer, answer, close or read children of the current thread. */
+export const SUBAGENT_ACTIONS = [
+  'spawn',
+  'status',
+  'wait',
+  'message',
+  'stop',
+  'inbox',
+  'report',
+  'ask',
+  'answer',
+  'close',
+  'read',
+] as const;
 
 export type SubagentAction = (typeof SUBAGENT_ACTIONS)[number];
 
@@ -309,21 +379,36 @@ export const SUBAGENT_TOOL: {
 } = {
   name: SUBAGENT_TOOL_NAME,
   description:
-    'Run and control typed subagents. action spawn (the default) starts a child in its own session and returns its id at once: explorer maps code read-only with file:line citations; reviewer applies a nine-point rubric and returns a verdict; notetaker extracts durable facts into the project brain; worker implements and verifies a task in its own worktree; planner returns a JSON task list. status lists children with state, tool count, tokens, elapsed time and current activity; wait blocks until the given child (or every child) settles or timeout_s passes and returns their summaries; message sends a follow-up to a child (queued while it runs, a new turn once it settled); stop cancels a child and kills its processes; inbox returns unread reports from children. A child calls report to send a progress note to its parent. Spawn independent children together, then wait. Keep tasks self-contained: the child has no conversation history.',
+    'Run and control typed subagents. action spawn (the default) starts a child in its own session and returns its id at once: explorer maps code read-only with file:line citations; reviewer judges the diff against its brief and runs the check when its tools allow it; notetaker extracts durable facts into the project brain; worker implements and verifies a task in its own worktree; planner returns a JSON task list. status lists children with state, tool count, tokens, elapsed time and current activity; wait blocks until the given child (or every child) settles, a child asks a question, or timeout_s passes, and returns open questions first; message sends a follow-up to a child (queued while it runs, a new turn once it settled); stop cancels a child and kills its processes; inbox returns unread reports from children. ask posts one blocking question to the parent and waits for the answer (default 300 s, then state your assumption and continue); answer replies to a question id; close stops and archives a child, keeping its transcript, and refuses to delete a worktree with unpushed commits; read returns the latest full report of a child and then its whole mailbox in both directions, paged with cursor, so nothing a child said is lost; a bounded summary names the report that holds the rest. A child calls report to send a progress note to its parent. Spawn independent children together, then wait. Keep tasks self-contained: the child has no conversation history.',
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: 'spawn, status, wait, message, stop, inbox or report. Default spawn.',
+        description:
+          'spawn, status, wait, message, stop, inbox, report, ask, answer, close or read. Default spawn.',
       },
       id: {
         type: 'string',
-        description: 'Child id for message and stop; optional filter for status and wait.',
+        description:
+          'Child id for message, stop, close and read; optional filter for status and wait.',
       },
       text: {
         type: 'string',
-        description: 'Message text for message and report.',
+        description: 'Message text for message and report; question text for ask; reply text for answer.',
+      },
+      rework: {
+        type: 'boolean',
+        description:
+          'For message: true when sending reviewer findings back as a rework round. The child gets at most three rework rounds.',
+      },
+      question_id: {
+        type: 'string',
+        description: 'For answer: the question id wait or a subagent.question event reported.',
+      },
+      cursor: {
+        type: 'string',
+        description: 'For read: the last message id already read; the next page starts after it.',
       },
       timeout_s: {
         type: 'integer',
@@ -344,6 +429,10 @@ export const SUBAGENT_TOOL: {
         type: 'string',
         description:
           'Optional model override. Omit to use the per-type model from settings with its fallback.',
+      },
+      depth: {
+        type: 'string',
+        description: 'For spawn: quick, normal or thorough. Default normal.',
       },
     },
     required: [],

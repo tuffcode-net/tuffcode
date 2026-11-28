@@ -182,10 +182,10 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
     createCheckpoint(deps.repos, threadId, label),
   );
   define('checkpoints.list', ({ threadId }) => listCheckpoints(deps.repos, threadId));
-  define('checkpoints.revert', async ({ threadId, checkpointId }) => {
-    // The revert RPC is itself the user's confirmation; the destructive git calls
-    // stay behind the domain-level confirm gate.
-    await revertCheckpoint(deps.repos, threadId, checkpointId, true);
+  define('checkpoints.revert', async ({ threadId, checkpointId, confirm }) => {
+    // The contract already pins confirm to true; passing it through keeps the
+    // destructive git calls behind the domain-level gate instead of a literal.
+    await revertCheckpoint(deps.repos, threadId, checkpointId, confirm);
     return {};
   });
 

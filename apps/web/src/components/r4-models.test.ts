@@ -136,7 +136,7 @@ describe('store subagent reopen', () => {
     store.getState().subagentMessage({
       childId: 'c1',
       threadId: 't1',
-      message: { id: 'm1', childId: 'c1', direction: 'to-child', text: 'add tests', createdAt: ISO },
+      message: { id: 'm1', childId: 'c1', direction: 'to-child', kind: 'message', text: 'add tests', createdAt: ISO },
     });
     store.getState().subagentStarted({ childId: 'c1', threadId: 't1', type: 'worker', model: 'm' });
     expect(store.getState().subagents.c1?.status).toBe('running');
@@ -152,7 +152,7 @@ describe('store subagent reopen', () => {
     store.getState().subagentMessage({
       childId: 'c1',
       threadId: 't1',
-      message: { id: 'm2', childId: 'c1', direction: 'to-parent', text: 'tests added', createdAt: ISO },
+      message: { id: 'm2', childId: 'c1', direction: 'to-parent', kind: 'message', text: 'tests added', createdAt: ISO },
     });
     expect(store.getState().subagents.c1?.unread).toBe(1);
   });

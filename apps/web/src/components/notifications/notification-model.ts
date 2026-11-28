@@ -149,12 +149,17 @@ export function notificationFor(event: ServerEvent, context: NotificationContext
     }
     case 'council.updated': {
       if (!settings.councilEscalation) return null;
-      // `reviewing` is the first state where the captain may have to decide; the
-      // server publishes no task-level escalation event, so this is the earliest
-      // observable signal. `failed` is a review that ended without a passing verdict.
-      if (event.payload.state !== 'reviewing' && event.payload.state !== 'failed') return null;
+      // A task that awaits the captain is the exact signal. Any other task change stays
+      // silent, and the goal state alone only speaks when no task rides along, so a
+      // review that is still moving does not notify on every task transition.
+      const awaitingCaptain = event.payload.taskState === 'awaiting-captain';
+      const taskChange = event.payload.taskId !== undefined;
+      if (!awaitingCaptain) {
+        if (taskChange) return null;
+        if (event.payload.state !== 'reviewing' && event.payload.state !== 'failed') return null;
+      }
       const thread = event.threadId === undefined ? undefined : context.threads[event.threadId];
-      const failed = event.payload.state === 'failed';
+      const failed = !awaitingCaptain && event.payload.state === 'failed';
       return {
         title: failed ? 'Council review failed' : 'Council needs you',
         body: shortTitle(thread),

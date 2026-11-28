@@ -9,6 +9,7 @@ import type {
 } from '@tuffcode/contracts';
 import { BASE_SYSTEM_PROMPT } from '@tuffcode/prompt';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { storeAttachmentBytes } from '../attachments/store.js';
 import type { ProviderRecord } from '../db/repos/index.js';
 import { createEventBus, type EventBus } from '../events.js';
 import { planPrompt } from '../prompt/service.js';
@@ -244,7 +245,14 @@ interface Fixture {
 describe('thread runner', () => {
   let fixtures: Fixture[] = [];
 
-  function setup(options: { providerEnabled?: boolean; adapter?: FakeAdapter } = {}): Fixture {
+  function setup(
+    options: {
+      providerEnabled?: boolean;
+      adapter?: FakeAdapter;
+      /** Parks adapter creation for the calls it answers, to hold a turn mid-assembly. */
+      adapterGate?: (call: number) => Promise<void> | undefined;
+    } = {},
+  ): Fixture {
     const ctx = createTestContext();
     const bus = createEventBus();
     const events: ServerEvent[] = [];
@@ -289,6 +297,8 @@ describe('thread runner', () => {
       settings: () => ctx.repos.settings.get(),
       createAdapter: async (provider, secret) => {
         adapterCalls.push({ provider, secret });
+        const parked = options.adapterGate?.(adapterCalls.length);
+        if (parked !== undefined) await parked;
         return adapter;
       },
     });
@@ -655,12 +665,168 @@ describe('thread runner', () => {
     expect(f.turnStatus(turnId)).toBe('interrupted');
   });
 
-  it('rejects a concurrent send and a blank message', async () => {
+  it('queues a send behind a live turn and runs it once the turn settles', async () => {
+    const f = setup();
+    const first = await f.runner.send('thr_a', 'first');
+    const queued = await f.runner.send('thr_a', 'second');
+    expect(queued).toMatchObject({ queued: true });
+    expect(queued.turnId).not.toBe(first.turnId);
+    // One row per message: the queued text is persisted at send time, not at delivery.
+    expect(f.ctx.repos.messages.list('thr_a')).toHaveLength(2);
+    expect(f.adapter.sends.map((call) => call.text)).toEqual(['first']);
+
+    const ended = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: first.turnId, reason: 'complete' });
+    await ended;
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(2));
+
+    expect(f.adapter.sends[1]).toMatchObject({ text: 'second' });
+    expect(f.adapter.sends[1]?.ctx.turnId).toBe(queued.turnId);
+    // The preallocated turn id makes recordTurnStart reuse the row, never duplicate it.
+    expect(f.ctx.repos.messages.list('thr_a')).toHaveLength(2);
+
+    const second = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'text.delta', turnId: queued.turnId, text: 'done' });
+    f.adapter.push({ type: 'turn.finished', turnId: queued.turnId, reason: 'complete' });
+    await second;
+
+    expect(f.turnStatus(queued.turnId)).toBe('complete');
+    expect(f.ctx.repos.messages.list('thr_a')).toHaveLength(3);
+  });
+
+  it('starts one turn when two sends arrive together', async () => {
+    const f = setup();
+    const [first, second] = await Promise.all([
+      f.runner.send('thr_a', 'one'),
+      f.runner.send('thr_a', 'two'),
+    ]);
+    // The slot is claimed before the first await, so the second send joins the backlog.
+    expect([first.queued, second.queued].filter((queued) => queued === true)).toHaveLength(1);
+    expect(f.adapter.sends.map((call) => call.text)).toEqual(['one']);
+
+    const live = first.queued === true ? second : first;
+    const backlogged = first.queued === true ? first : second;
+    const ended = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: live.turnId, reason: 'complete' });
+    await ended;
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(2));
+    expect(f.adapter.sends[1]?.ctx.turnId).toBe(backlogged.turnId);
+    const secondEnd = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: backlogged.turnId, reason: 'complete' });
+    await secondEnd;
+    expect(f.turnStatus(backlogged.turnId)).toBe('complete');
+  });
+
+  it('queues a send that lands while the settle hands the thread over', async () => {
+    const f = setup();
+    let sneaky: Promise<{ turnId: string; queued?: boolean }> | null = null;
+    // The settle deletes the slot, emits context, then delivers the backlog. A send that
+    // lands in that gap must queue, not start a second turn beside the drained one.
+    f.bus.subscribe((event) => {
+      if (event.type !== 'context.updated') return;
+      if (sneaky !== null || f.adapter.sends.length !== 1) return;
+      sneaky = f.runner.send('thr_a', 'sneaky');
+    });
+    const first = await f.runner.send('thr_a', 'one');
+    const queued = await f.runner.send('thr_a', 'two');
+    expect(queued.queued).toBe(true);
+
+    const ended = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: first.turnId, reason: 'complete' });
+    await ended;
+    await vi.waitFor(() => expect(sneaky).not.toBeNull());
+    const sneaked = await sneaky!;
+    expect(sneaked.queued).toBeUndefined();
+
+    // Only the turn that took the slot runs; the backlog waits for its settle.
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(2));
+    expect(f.adapter.sends.map((call) => call.text)).toEqual(['one', 'sneaky']);
+    expect(f.turnStatus(queued.turnId)).toBeUndefined();
+
+    const sneakyEnd = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: sneaked.turnId, reason: 'complete' });
+    await sneakyEnd;
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(3));
+    expect(f.adapter.sends[2]?.text).toBe('two');
+    const twoEnd = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: queued.turnId, reason: 'complete' });
+    await twoEnd;
+    expect(f.turnStatus(queued.turnId)).toBe('complete');
+  });
+
+  it('drops a turn interrupted while it assembles and frees the slot', async () => {
+    const gate = Promise.withResolvers<void>();
+    const f = setup({ adapterGate: (call) => (call === 1 ? gate.promise : undefined) });
+    const pending = f.runner.send('thr_a', 'long job');
+    await vi.waitFor(() => expect(f.adapterCalls).toHaveLength(1));
+    await f.runner.interrupt('thr_a');
+    gate.resolve();
+    const { turnId } = await pending;
+    await vi.waitFor(() => expect(f.runner.listActive()).toHaveLength(0));
+    // The adapter was built but never asked to run, and the turn settled honestly.
+    expect(f.adapter.sends).toHaveLength(0);
+    expect(f.turnStatus(turnId)).toBe('interrupted');
+    expect(f.ctx.repos.messages.list('thr_a').map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    // The slot is free: the next send starts a turn instead of queueing forever.
+    const next = await f.runner.send('thr_a', 'after the stop');
+    expect(next.queued).toBeUndefined();
+    const ended = waitForTurnEnd(f.bus);
+    f.adapter.push({ type: 'turn.finished', turnId: next.turnId, reason: 'complete' });
+    await ended;
+    expect(f.turnStatus(next.turnId)).toBe('complete');
+  });
+
+  it('runs two queued messages in the order they were sent', async () => {
+    const f = setup();
+    const first = await f.runner.send('thr_a', 'one');
+    const second = await f.runner.send('thr_a', 'two');
+    const third = await f.runner.send('thr_a', 'three');
+    expect([second.queued, third.queued]).toEqual([true, true]);
+
+    let live = 1;
+    for (const turnId of [first.turnId, second.turnId, third.turnId]) {
+      await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(live));
+      const ended = waitForTurnEnd(f.bus);
+      f.adapter.push({ type: 'turn.finished', turnId, reason: 'complete' });
+      await ended;
+      live += 1;
+    }
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(3));
+
+    expect(f.adapter.sends.map((call) => call.text)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('refuses a ninth queued message', async () => {
     const f = setup();
     await f.runner.send('thr_a', 'first');
-    await expect(f.runner.send('thr_a', 'second')).rejects.toMatchObject({ code: 'conflict' });
-    f.adapter.end();
+    for (let index = 0; index < 8; index += 1) {
+      await expect(f.runner.send('thr_a', `queued ${index}`)).resolves.toMatchObject({
+        queued: true,
+      });
+    }
+    await expect(f.runner.send('thr_a', 'overflow')).rejects.toMatchObject({ code: 'conflict' });
+    await f.runner.interrupt('thr_a');
+  });
 
+  it('drops the queue when the turn is interrupted', async () => {
+    const f = setup();
+    await f.runner.send('thr_a', 'long job');
+    const queued = await f.runner.send('thr_a', 'never runs');
+    expect(queued.queued).toBe(true);
+
+    await f.runner.interrupt('thr_a');
+    await vi.waitFor(() => expect(f.runner.listActive()).toHaveLength(0));
+
+    // The dropped turn never starts: no second stream, no turn row, one message each.
+    expect(f.adapter.sends).toHaveLength(1);
+    expect(f.turnStatus(queued.turnId)).toBeUndefined();
+    expect(f.ctx.repos.messages.list('thr_a')).toHaveLength(2);
+  });
+
+  it('rejects a blank message and an unknown thread', async () => {
     const idle = setup();
     await expect(idle.runner.send('thr_a', '   ')).rejects.toMatchObject({ code: 'bad-request' });
     await expect(idle.runner.send('thr_missing', 'hello')).rejects.toMatchObject({
@@ -728,30 +894,42 @@ describe('thread runner', () => {
     expect(f.turnStatus(turnId)).toBe('failed');
   });
 
-  it('resolves attachments inside the worktree and rejects escaping paths', async () => {
+  it('resolves attachments inside the worktree and skips one that escapes with a notice', async () => {
     const f = setup();
-    const { turnId } = await f.runner.send('thr_a', '', [
+    const { turnId } = await f.runner.send('thr_a', 'look at these', [
       { name: 'shot.png', path: 'shot.png', mimeType: 'image/png' },
-      { name: 'notes.txt', path: 'notes.txt' },
+      { name: 'escape.txt', path: '../escape.txt' },
     ]);
     expect(turnId).toMatch(/^turn_/);
     const ctx = f.adapter.sends[0]?.ctx;
     expect(ctx?.attachments).toEqual([
       { name: 'shot.png', path: join(f.ctx.env.root, 'shot.png'), mimeType: 'image/png', kind: 'image' },
-      { name: 'notes.txt', path: join(f.ctx.env.root, 'notes.txt'), kind: 'file' },
     ]);
+    const notices = f.events.flatMap((event) =>
+      event.type === 'thread.event' && event.payload.type === 'notice' ? [event.payload] : [],
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.message).toContain('outside the worktree');
     f.adapter.end();
-
-    const other = setup();
-    await expect(
-      other.runner.send('thr_a', '', [{ name: 'escape', path: '../escape.txt' }]),
-    ).rejects.toMatchObject({ code: 'bad-request' });
   });
 
   it('passes inline image bytes through without a worktree path', async () => {
     const f = setup();
     const { turnId } = await f.runner.send('thr_a', '', [
       { name: 'pasted.png', data: 'AAAA', mimeType: 'image/png' },
+    ]);
+    expect(turnId).toMatch(/^turn_/);
+    expect(f.adapter.sends[0]?.ctx.attachments).toEqual([
+      { name: 'pasted.png', data: 'AAAA', mimeType: 'image/png', kind: 'image' },
+    ]);
+    f.adapter.end();
+  });
+
+  it('reads a stored attachment id back for a retry or a replayed message', async () => {
+    const f = setup();
+    const id = await storeAttachmentBytes('AAAA', 'image/png');
+    const { turnId } = await f.runner.send('thr_a', 'try again', [
+      { name: 'pasted.png', id, mimeType: 'image/png' },
     ]);
     expect(turnId).toMatch(/^turn_/);
     expect(f.adapter.sends[0]?.ctx.attachments).toEqual([
@@ -1033,7 +1211,13 @@ describe('thread runner', () => {
     expect(f.adapter.sends).toHaveLength(2);
     // The old run's finally must not clear the new turn's slot.
     expect(f.runner.listActive().map((run) => run.turnId)).toEqual([second.turnId]);
-    await expect(f.runner.send('thr_a', 'three')).rejects.toMatchObject({ code: 'conflict' });
+    // A send while the replacement turn is live joins its backlog: it resolves as queued,
+    // starts no stream, and the slot still names the live turn.
+    const third = await f.runner.send('thr_a', 'three');
+    expect(third.queued).toBe(true);
+    expect(third.turnId).not.toBe(second.turnId);
+    expect(f.adapter.sends).toHaveLength(2);
+    expect(f.runner.listActive().map((run) => run.turnId)).toEqual([second.turnId]);
 
     const secondEnded = waitFor(
       f.bus,
@@ -1048,11 +1232,30 @@ describe('thread runner', () => {
       { type: 'turn.finished', turnId: second.turnId, reason: 'complete' },
     );
     await secondEnded;
+    // The settled run hands the thread to the queued turn instead of going idle.
+    await vi.waitFor(() => expect(f.adapter.sends).toHaveLength(3));
+    expect(f.adapter.sends.map((call) => call.text)).toEqual(['one', 'two', 'three']);
+    expect(f.runner.listActive().map((run) => run.turnId)).toEqual([third.turnId]);
+
+    const thirdEnded = waitFor(
+      f.bus,
+      (event) =>
+        event.type === 'thread.event' &&
+        event.payload.type === 'turn.finished' &&
+        event.payload.turnId === third.turnId,
+    );
+    f.adapter.push(
+      { type: 'turn.started', turnId: third.turnId },
+      { type: 'text.delta', turnId: third.turnId, text: 'queued' },
+      { type: 'turn.finished', turnId: third.turnId, reason: 'complete' },
+    );
+    await thirdEnded;
     await vi.waitFor(() => expect(f.runner.listActive()).toHaveLength(0));
 
     expect(finishPayloads(f)).toEqual([
       { type: 'turn.finished', turnId: first.turnId, reason: 'interrupted' },
       { type: 'turn.finished', turnId: second.turnId, reason: 'complete' },
+      { type: 'turn.finished', turnId: third.turnId, reason: 'complete' },
     ]);
     // The cancelled run wrote its delta and its boundary, and nothing else.
     expect(turnEventTypes(f, first.turnId)).toEqual(['text.delta', 'turn.finished']);
@@ -1061,17 +1264,29 @@ describe('thread runner', () => {
       'text.delta',
       'turn.finished',
     ]);
+    expect(turnEventTypes(f, third.turnId)).toEqual([
+      'turn.started',
+      'text.delta',
+      'turn.finished',
+    ]);
     expect(storedEvents(f).some((row) => row.type === 'error')).toBe(false);
 
+    // The queued send writes its user row immediately, so it lands ahead of the
+    // assistant row of the turn it waited behind.
     const messages = f.ctx.repos.messages.list('thr_a');
     expect(messages.map((message) => message.role)).toEqual([
       'user',
       'assistant',
       'user',
+      'user',
+      'assistant',
       'assistant',
     ]);
     expect(messages[1]?.content).toBe(`partial${INTERRUPTED_MARKER}`);
-    expect(messages[3]?.content).toBe('fresh');
+    expect(messages[2]?.content).toBe('two');
+    expect(messages[3]?.content).toBe('three');
+    expect(messages[4]?.content).toBe('fresh');
+    expect(messages[5]?.content).toBe('queued');
   });
 
   it('does not let a stopped run clear the slot of the turn that replaced it', async () => {
@@ -1094,7 +1309,6 @@ describe('thread runner', () => {
     // clear its own slot, so the new turn must still own the thread.
     await vi.waitFor(() => expect(contextEvents(f.events)).toHaveLength(3));
     expect(f.runner.listActive().map((run) => run.turnId)).toEqual([second.turnId]);
-    await expect(f.runner.send('thr_a', 'three')).rejects.toMatchObject({ code: 'conflict' });
 
     const secondEnded = waitFor(
       f.bus,

@@ -104,11 +104,48 @@ describe('subagent harness tool', () => {
     expect(bad.isError).toBe(true);
   });
 
+  it('passes the rework flag from the tool call to the control hook', async () => {
+    const seen: unknown[] = [];
+    const deps: AdapterDeps = {
+      logger,
+      resolveCommand: async () => null,
+      env: {},
+      subagentControl: async (request) => {
+        seen.push(request);
+        return 'queued';
+      },
+    };
+    const ctx = context({ threadId: 'thr_parent' });
+
+    await executeTool(
+      'subagent',
+      { action: 'message', id: 'sub_1', text: 'fix finding 1', rework: true },
+      ctx,
+      createToolSessionState(),
+      deps,
+    );
+    await executeTool(
+      'subagent',
+      { action: 'message', id: 'sub_1', text: 'also read the tests' },
+      ctx,
+      createToolSessionState(),
+      deps,
+    );
+
+    expect(seen[0]).toMatchObject({ action: 'message', rework: true });
+    expect(seen[1]).not.toHaveProperty('rework');
+  });
+
   it('classifies read actions as allowed even in read-only turns', () => {
     expect(classifySubagentTool('read-only', { action: 'status' })).toBe('allow');
     expect(classifySubagentTool('read-only', { action: 'report' })).toBe('allow');
+    expect(classifySubagentTool('read-only', { action: 'ask' })).toBe('allow');
+    expect(classifySubagentTool('read-only', { action: 'read' })).toBe('allow');
     expect(classifySubagentTool('read-only', { action: 'spawn' })).toBe('deny');
+    expect(classifySubagentTool('read-only', { action: 'close' })).toBe('deny');
+    expect(classifySubagentTool('read-only', { action: 'answer' })).toBe('deny');
     expect(classifySubagentTool('ask', { action: 'stop' })).toBe('approve');
+    expect(classifySubagentTool('ask', { action: 'close' })).toBe('approve');
     expect(classifySubagentTool('full-auto', {})).toBe('allow');
     expect(classifySubagentTool('full-auto', { action: 'nope' })).toBe('deny');
   });

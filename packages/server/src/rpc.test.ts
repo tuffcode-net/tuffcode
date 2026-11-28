@@ -67,7 +67,14 @@ const IMPLEMENTED = [
   'threads.update',
 ];
 
-const DEFERRED = ['council.start', 'council.cancel', 'council.status'];
+const DEFERRED = [
+  'council.start',
+  'council.cancel',
+  'council.status',
+  'council.approvePlan',
+  'council.revisePlan',
+  'council.answerEscalation',
+];
 
 const TERMINAL = ['terminal.open', 'terminal.input', 'terminal.resize', 'terminal.close'];
 

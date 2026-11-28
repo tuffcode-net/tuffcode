@@ -1,5 +1,11 @@
 import type { StatusKey } from '@tuffcode/ui';
-import type { SubagentStatus, SubagentType } from '@tuffcode/contracts';
+import type {
+  SubagentMessage,
+  SubagentMessageKind,
+  SubagentStatus,
+  SubagentType,
+  ThreadEventRow,
+} from '@tuffcode/contracts';
 import { Compass, Hammer, ListTree, NotebookPen, ShieldCheck, type LucideIcon } from 'lucide-react';
 import { isTerminalSubagentStatus, type SubagentChild } from '../../store/app-store';
 
@@ -155,4 +161,51 @@ export function selectActiveSubagent(
     if (requested !== undefined) return requested;
   }
   return children.find(isRunningSubagent) ?? children[0] ?? null;
+}
+
+/** One label per mailbox kind, so the pane never shows a bare enum value. */
+export const SUBAGENT_MESSAGE_KIND_LABEL: Record<SubagentMessageKind, string> = {
+  message: 'Message',
+  report: 'Report',
+  question: 'Question',
+  answer: 'Answer',
+};
+
+/** Which way a mailbox row travelled, in words the parent can read. */
+export function subagentMessageDirectionLabel(message: SubagentMessage): string {
+  return message.direction === 'to-child' ? 'parent to child' : 'child to parent';
+}
+
+/**
+ * A child's persisted event rows plus the live frames the store holds. The seq is the
+ * cursor for both, so a live frame wins when it covers the same row, and a reload
+ * rebuilds the pane instead of showing an empty timeline.
+ */
+export function mergeChildEvents(
+  persisted: readonly ThreadEventRow[],
+  live: readonly ThreadEventRow[],
+): ThreadEventRow[] {
+  const bySeq = new Map<number, ThreadEventRow>();
+  for (const row of persisted) bySeq.set(row.seq, row);
+  for (const row of live) bySeq.set(row.seq, row);
+  return [...bySeq.values()].toSorted((left, right) => left.seq - right.seq);
+}
+
+/**
+ * Persisted rows plus the live frames of the same child, oldest first and deduped by
+ * id. The server is the source of truth for what was said; a live frame only fills the
+ * gap between a load and the next one.
+ */
+export function mergeSubagentMessages(
+  persisted: readonly SubagentMessage[],
+  live: readonly SubagentMessage[],
+): SubagentMessage[] {
+  const seen = new Set<string>();
+  const merged: SubagentMessage[] = [];
+  for (const message of [...persisted, ...live]) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    merged.push(message);
+  }
+  return merged.toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }

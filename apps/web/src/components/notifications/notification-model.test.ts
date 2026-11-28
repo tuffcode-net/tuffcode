@@ -86,12 +86,21 @@ function subagentEvent(status: 'done' | 'failed' | 'cancelled'): ServerEvent {
   };
 }
 
-function councilEvent(state: 'reviewing' | 'failed'): ServerEvent {
+function councilEvent(
+  state: 'reviewing' | 'running' | 'failed',
+  taskState?: 'awaiting-captain' | 'passed',
+  taskId?: string,
+): ServerEvent {
   return {
     kind: 'event',
     type: 'council.updated',
     threadId: 't1',
-    payload: { goalId: 'g1', state },
+    payload: {
+      goalId: 'g1',
+      state,
+      ...(taskState === undefined ? {} : { taskState }),
+      ...(taskId === undefined ? {} : { taskId }),
+    },
   };
 }
 
@@ -178,6 +187,13 @@ describe('notification rule table', () => {
     expect(notificationFor(councilEvent('failed'), context(new Map()))?.title).toBe(
       'Council review failed',
     );
+    expect(
+      notificationFor(councilEvent('running', 'awaiting-captain', 'tsk1'), context(new Map()))
+        ?.title,
+    ).toBe('Council needs you');
+    expect(
+      notificationFor(councilEvent('reviewing', 'passed', 'tsk1'), context(new Map())),
+    ).toBeNull();
     expect(
       notificationFor(councilEvent('reviewing'), context(new Map(), { councilEscalation: false })),
     ).toBeNull();

@@ -4,6 +4,7 @@ import type { PromptSection } from '@tuffcode/prompt';
 import {
   BASE_SYSTEM_PROMPT,
   CUSTOM_INSTRUCTIONS_HEADING,
+  CUSTOM_INSTRUCTION_TOKEN_BUDGET,
   PROJECT_RULES_HEADING,
   estimateTokens,
 } from '@tuffcode/prompt';
@@ -239,7 +240,7 @@ describe('prompt planning', () => {
     expect(ctx.repos.brain.get(entry.id)?.lastUsedAt).toBeNull();
   });
 
-  it('caps custom instructions from settings at 2000 tokens on a sentence boundary', () => {
+  it('caps custom instructions at the shared token budget on a sentence boundary', () => {
     const ctx = setup();
     ctx.repos.settings.patch({
       customInstructions: 'Keep every answer short and concrete. '.repeat(400),
@@ -250,8 +251,8 @@ describe('prompt planning', () => {
     expect(section).toBeDefined();
     expect(section?.text.startsWith(CUSTOM_INSTRUCTIONS_HEADING)).toBe(true);
     const body = (section?.text ?? '').slice(CUSTOM_INSTRUCTIONS_HEADING.length).trim();
-    expect(estimateTokens(body)).toBeLessThanOrEqual(2000);
-    expect(estimateTokens(body)).toBeGreaterThan(1500);
+    expect(estimateTokens(body)).toBeLessThanOrEqual(CUSTOM_INSTRUCTION_TOKEN_BUDGET);
+    expect(estimateTokens(body)).toBeGreaterThan(CUSTOM_INSTRUCTION_TOKEN_BUDGET - 500);
     expect(body.endsWith('concrete.')).toBe(true);
   });
 

@@ -63,6 +63,12 @@ test('runs a council goal with the configured models and reports the failure', a
   await expect(plannerNode).toBeVisible({ timeout: 60_000 });
   await expect(plannerNode).toContainText('planner-mock');
 
+  // The composer starts goals in manual autonomy unless the settings default is full
+  // auto, so the plan parks for approval before any worker is dispatched.
+  await expect(page.getByTestId('council-plan-approval')).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId('council-plan-task')).toHaveCount(2);
+  await page.getByTestId('council-approve-plan').click();
+
   const taskNodes = board.locator('[data-testid="council-board-node"][data-kind="task"]');
   await expect(taskNodes).toHaveCount(2, { timeout: 60_000 });
   await expect(taskNodes.first()).toContainText('worker-mock');

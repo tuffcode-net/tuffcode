@@ -1,6 +1,7 @@
 import { DEFAULT_SETTINGS, emptySubagentModels, type Settings } from '@tuffcode/contracts';
 import { describe, expect, it } from 'vitest';
 import {
+  CUSTOM_INSTRUCTIONS_CHAR_LIMIT,
   CUSTOM_INSTRUCTION_TOKEN_BUDGET,
   INHERIT_MODEL_VALUE,
   PARENT_PROVIDER_VALUE,
@@ -181,12 +182,20 @@ describe('subagent model payload building', () => {
   });
 });
 
+describe('custom instruction budget', () => {
+  it('accepts exactly the text the UI limit allows', () => {
+    expect(CUSTOM_INSTRUCTIONS_CHAR_LIMIT).toBe(CUSTOM_INSTRUCTION_TOKEN_BUDGET * 4);
+  });
+});
+
 describe('prompt preview sections', () => {
   it('labels every section the server can return', () => {
     expect(PROMPT_SECTION_ORDER.map((name) => promptSectionLabel(name))).toEqual([
       PROMPT_SECTION_LABEL.base,
+      PROMPT_SECTION_LABEL['plan-mode'],
       PROMPT_SECTION_LABEL['about-user'],
       PROMPT_SECTION_LABEL['custom-instructions'],
+      PROMPT_SECTION_LABEL['project-rules'],
       PROMPT_SECTION_LABEL.skills,
       PROMPT_SECTION_LABEL['available-skills'],
       PROMPT_SECTION_LABEL['brain-always'],

@@ -1,4 +1,5 @@
 import type { RpcResult } from '@tuffcode/contracts';
+import { councilAutonomy } from '@tuffcode/contracts';
 import { useCallback, useEffect, useState } from 'react';
 import { useRpc } from '../../rpc/rpc-context';
 import { useAppStore } from '../../store/app-store';
@@ -7,13 +8,12 @@ import {
   isGoalTerminal,
   isPermanentCouncilFailure,
 } from '../inspector/council-model';
-import { autonomyFromSettings } from './council-goal';
 import { goalIdFromLatest } from './council-goal-source';
 
 export type CouncilStatus = RpcResult<'council.status'>;
 
-/** The inspector polls at the same cadence; the strip is a second viewer of one goal. */
-const POLL_INTERVAL_MS = 3000;
+/** The board and inspector read the same goal; the event stream carries the changes. */
+const POLL_INTERVAL_MS = 15_000;
 
 export interface UseCouncilGoalResult {
   goalId: string | null;
@@ -32,7 +32,7 @@ export interface UseCouncilGoalResult {
  */
 export function useCouncilGoal(threadId: string | undefined): UseCouncilGoalResult {
   const rpc = useRpc();
-  const autonomy = autonomyFromSettings(useAppStore((state) => state.settings));
+  const autonomy = councilAutonomy(useAppStore((state) => state.settings));
 
   const [goalId, setGoalId] = useState<string | null>(null);
   const [status, setStatus] = useState<CouncilStatus | null>(null);
