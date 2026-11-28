@@ -28,6 +28,8 @@ export interface TerminalProps {
   /** Lines kept in the renderer's scrollback buffer. The pty never sees this. */
   scrollback?: number;
   cursorStyle?: TerminalCursorStyle;
+  /** Palette-derived xterm colors; the CSS variables are the fallback at mount. */
+  theme?: ITheme;
   className?: string;
   ref?: Ref<TerminalHandle>;
 }
@@ -60,6 +62,7 @@ export function Terminal({
   fontSize,
   scrollback,
   cursorStyle,
+  theme,
   className,
   ref,
 }: TerminalProps) {
@@ -76,6 +79,8 @@ export function Terminal({
   // re-creating the terminal whenever a setting changes.
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const appliedFontSizeRef = useRef(appearance.fontSize);
 
   useImperativeHandle(
@@ -102,7 +107,7 @@ export function Terminal({
       fontSize: initial.fontSize,
       fontFamily: readVar(styles, '--font-mono') ?? 'monospace',
       scrollback: initial.scrollback,
-      theme: readTheme(),
+      theme: themeRef.current ?? readTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -156,5 +161,20 @@ export function Terminal({
     }
   }, [appearance.scrollback, appearance.fontSize, appearance.cursorStyle, appearance.cursorBlink]);
 
-  return <div ref={containerRef} className={cn('size-full bg-terminal-background', className)} />;
+  // A palette switch repaints the open terminal in place; the pty and scrollback stay.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term || theme === undefined) return;
+    term.options.theme = theme;
+  }, [theme]);
+
+  return (
+    <div
+      ref={containerRef}
+      // The xterm theme is not reachable from the DOM, so expose its background for
+      // tests and for anyone inspecting which palette the terminal painted.
+      data-terminal-background={theme?.background}
+      className={cn('size-full bg-terminal-background', className)}
+    />
+  );
 }

@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { isLightThemeId } from '@tuffcode/shared';
 import type { Theme } from './bridge';
 
 export type ResolvedTheme = 'dark' | 'light';
@@ -80,7 +81,8 @@ export function readPersistedTheme(file: string): ResolvedTheme {
       | undefined;
     const raw = row?.value;
     if (typeof raw !== 'string') return 'dark';
-    return JSON.parse(raw) === 'light' ? 'light' : 'dark';
+    const stored: unknown = JSON.parse(raw);
+    return typeof stored === 'string' && isLightThemeId(stored) ? 'light' : 'dark';
   } catch {
     return 'dark';
   } finally {

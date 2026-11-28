@@ -153,6 +153,13 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
   });
   define('threads.search', ({ query, limit }) => searchThreads(deps.repos, query, limit));
   define('threads.delete', async ({ id, removeWorktree }) => {
+    // A deleted parent must not leave a live child: stop every queued or running child
+    // first, then remove the child thread rows, which the parent's ON DELETE SET NULL
+    // would otherwise turn into top-level conversations with live worktrees.
+    await deps.subagents?.cancelAll(id);
+    for (const child of deps.repos.subagents.listByThread(id)) {
+      if (child.childThreadId !== null) deps.repos.threads.remove(child.childThreadId);
+    }
     await deps.runner.disposeThread(id);
     await deleteThread(deps.repos, id, removeWorktree ?? false);
     return {};

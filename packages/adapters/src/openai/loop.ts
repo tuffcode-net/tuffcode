@@ -257,6 +257,9 @@ function planToolCall(
   return { args, parseError, result: null, decision };
 }
 
+/** A turn that keeps calling tools without finishing is stopped with a visible reason. */
+const MAX_TOOL_STEPS = 60;
+
 export async function* runTurn(options: RunTurnOptions): AsyncIterable<AdapterEvent> {
   const { ctx, client, messages, state, deps, signal } = options;
   const turnId = ctx.turnId;
@@ -268,6 +271,18 @@ export async function* runTurn(options: RunTurnOptions): AsyncIterable<AdapterEv
     for (let iteration = 0; ; iteration += 1) {
       if (signal.aborted) {
         reason = 'interrupted';
+        break;
+      }
+      if (iteration >= MAX_TOOL_STEPS) {
+        yield {
+          type: 'error',
+          message:
+            'openai: stopped after ' +
+            String(MAX_TOOL_STEPS) +
+            ' tool steps without a final answer',
+          retryable: false,
+        };
+        reason = 'error';
         break;
       }
 
@@ -353,6 +368,16 @@ export async function* runTurn(options: RunTurnOptions): AsyncIterable<AdapterEv
 
       if (ordered.length === 0) {
         messages.push({ role: 'assistant', content: textParts.join('') });
+        // A reply cut by the output cap is a failed turn, not a finished one: the model
+        // never chose to stop, so the user must see why the answer ends mid-thought.
+        if (finishReason === 'length') {
+          yield {
+            type: 'error',
+            message: 'openai: the reply hit the output token limit and was cut off',
+            retryable: false,
+          };
+          reason = 'error';
+        }
         break;
       }
 

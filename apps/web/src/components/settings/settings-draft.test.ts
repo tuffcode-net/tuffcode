@@ -6,6 +6,7 @@ import {
   isSettingsDraftDirty,
   pickSettings,
   shellFieldError,
+  shouldReseedDraft,
 } from './settings-draft';
 
 const APPEARANCE_KEYS = ['theme', 'fontSize', 'sidebarWidth', 'panelAnimation'] as const;
@@ -127,5 +128,28 @@ describe('shellFieldError', () => {
   it('rejects control characters', () => {
     expect(shellFieldError('pwsh.exe\nwhoami')).toBe('Shell cannot contain control characters.');
     expect(shellFieldError('pwsh.exe\t')).toBeUndefined();
+  });
+});
+
+describe('shouldReseedDraft', () => {
+  it('follows the server when the draft is missing or clean', () => {
+    const stored = settings({ theme: 'dark', fontSize: 14 });
+    expect(shouldReseedDraft(null, stored, APPEARANCE_KEYS)).toBe(true);
+    expect(shouldReseedDraft(pickSettings(stored, APPEARANCE_KEYS), stored, APPEARANCE_KEYS)).toBe(
+      true,
+    );
+  });
+
+  it('keeps unsaved edits when a per-key save updates the server', () => {
+    const stored = settings({ theme: 'dark', fontSize: 14 });
+    const draft = { ...pickSettings(stored, APPEARANCE_KEYS), fontSize: 18 };
+
+    // The theme picker saved `theme`; the draft's unsaved font size must survive.
+    const afterSave = settings({ theme: 'light', fontSize: 14 });
+    expect(shouldReseedDraft(draft, afterSave, APPEARANCE_KEYS)).toBe(false);
+  });
+
+  it('does nothing before settings arrive', () => {
+    expect(shouldReseedDraft(null, null, APPEARANCE_KEYS)).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import {
   buildSettingsPatch,
   isSettingsDraftDirty,
   pickSettings,
+  shouldReseedDraft,
   type SettingsKey,
 } from './settings-draft';
 
@@ -18,6 +19,8 @@ export interface SettingsDraftController<K extends SettingsKey> {
   update(patch: Partial<Pick<Settings, K>>): void;
   reset(): void;
   submit(): Promise<void>;
+  /** Persists one patch immediately, for controls that apply on click. */
+  save(patch: Partial<Pick<Settings, K>>): Promise<void>;
 }
 
 /**
@@ -39,17 +42,19 @@ export function useSettingsDraft<K extends SettingsKey>(
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Re-seed whenever the server settings change: first load, a save, or a
-    // settings.updated event from another surface.
-    if (settings) setDraft(pickSettings(settings, keys));
-    // `keys` is a module constant; the signature tracks its contents.
-  }, [settings, signature]); // oxlint-disable-line react-hooks/exhaustive-deps
-
   const dirty = useMemo(
     () => (draft && settings ? isSettingsDraftDirty(draft, settings, keys) : false),
     [draft, settings, signature], // oxlint-disable-line react-hooks/exhaustive-deps
   );
+
+  useEffect(() => {
+    // Re-seed on a server change only when the draft has no local edits: a per-key
+    // save (the theme picker) must not discard the section's other unsaved fields.
+    if (settings !== null && shouldReseedDraft(draft, settings, keys)) {
+      setDraft(pickSettings(settings, keys));
+    }
+    // `keys` is a module constant; the signature tracks its contents.
+  }, [settings, signature, dirty]); // oxlint-disable-line react-hooks/exhaustive-deps
 
   const update = useCallback((patch: Partial<Pick<Settings, K>>) => {
     setDraft((previous) => (previous === null ? previous : { ...previous, ...patch }));
@@ -80,5 +85,21 @@ export function useSettingsDraft<K extends SettingsKey>(
     }
   }, [draft, settings, keys, rpc, setSettings]);
 
-  return { draft, dirty, saving, error, update, reset, submit };
+  const save = useCallback(
+    async (patch: Partial<Pick<Settings, K>>) => {
+      setSaving(true);
+      setError(null);
+      try {
+        const next = await rpc.request('settings.set', { patch });
+        setSettings(next);
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Could not save settings.');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [rpc, setSettings],
+  );
+
+  return { draft, dirty, saving, error, update, reset, submit, save };
 }
