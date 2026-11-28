@@ -9,15 +9,12 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { BundledLanguage, BundledTheme, Highlighter, ShikiTransformer } from 'shiki';
+import type { ThemeId } from '@tuffcode/contracts';
+import type { BundledLanguage, Highlighter, ShikiTransformer } from 'shiki';
 import { cn } from './cn';
+import { paletteFor } from './themes/palettes';
 
-export type MarkdownTheme = 'dark' | 'light';
-
-const THEME: Record<MarkdownTheme, BundledTheme> = {
-  dark: 'github-dark-default',
-  light: 'github-light-default',
-};
+export type MarkdownTheme = ThemeId;
 
 /**
  * Shiki paints its own page background on the `<pre>`; the design system wants
@@ -35,7 +32,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 /** Lazily load one Shiki highlighter for the whole renderer. */
 function getHighlighter(): Promise<Highlighter> {
   highlighterPromise ??= import('shiki').then((shiki) =>
-    shiki.createHighlighter({ themes: [THEME.dark, THEME.light], langs: [] }),
+    shiki.createHighlighter({ themes: ['github-dark-default', 'github-light-default'], langs: [] }),
   );
   return highlighterPromise;
 }
@@ -47,12 +44,16 @@ async function highlightCode(
 ): Promise<string | null> {
   try {
     const highlighter = await getHighlighter();
+    const syntax = paletteFor(theme).syntax;
+    if (!highlighter.getLoadedThemes().includes(syntax)) {
+      await highlighter.loadTheme(syntax);
+    }
     if (!highlighter.getLoadedLanguages().includes(lang)) {
       await highlighter.loadLanguage(lang as BundledLanguage);
     }
     return highlighter.codeToHtml(code, {
       lang,
-      theme: THEME[theme],
+      theme: syntax,
       transformers: [stripBackground],
     });
   } catch {

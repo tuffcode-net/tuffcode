@@ -17,6 +17,7 @@ export const MOCK_FILE_CONTENT = 'added by the mock provider';
 export const MOCK_THINKING = 'The project is small, so a quick scan is enough.';
 export const MOCK_PROSE = 'I will inspect the project before editing it.';
 export const MOCK_TIMELINE_FINAL = 'The project looks healthy and ready for changes.';
+export const MOCK_CODE_REPLY = 'Here is the constant:\n\n```ts\nconst answer = 42;\n```\n';
 export const MOCK_TIMELINE_FILE = 'timeline-added.txt';
 export const MOCK_TIMELINE_FILE_CONTENT = 'alpha\nbeta';
 export const MOCK_SUBAGENT_TASK = 'map the project structure';
@@ -420,6 +421,12 @@ async function handleChat(
       path: MOCK_FILE_PATH,
       content: MOCK_FILE_CONTENT,
     });
+    response.end();
+    return;
+  }
+
+  if (prompt.includes('show-code')) {
+    await streamText(response, MOCK_CODE_REPLY);
     response.end();
     return;
   }
