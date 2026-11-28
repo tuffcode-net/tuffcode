@@ -14,7 +14,6 @@ import {
   type NotifyTestResult,
   type PickFileRequest,
   type BootstrapInfo,
-  type Theme,
   type TuffcodeBridge,
   type UpdateCheckOutcome,
 } from './bridge';
@@ -44,15 +43,9 @@ const bridge: TuffcodeBridge = {
       ipcRenderer.removeListener(MENU_ACTION_CHANNEL, listener);
     };
   },
-  setTheme: (theme: Theme): void => {
-    const resolved =
-      theme === 'system'
-        ? window.matchMedia('(prefers-color-scheme: light)').matches
-          ? 'light'
-          : 'dark'
-        : theme;
-    document.documentElement.dataset.theme = resolved;
-    ipcRenderer.send(SET_THEME_CHANNEL, resolved);
+  setTheme: (kind: 'dark' | 'light'): void => {
+    // The renderer owns `dataset.theme`; the main process only needs the base scheme.
+    ipcRenderer.send(SET_THEME_CHANNEL, kind);
   },
 };
 

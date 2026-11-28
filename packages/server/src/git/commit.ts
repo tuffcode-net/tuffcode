@@ -2,7 +2,7 @@ import type { Repos } from '../db/repos/index.js';
 import { badRequest, conflict, RpcError } from '../errors.js';
 import { requireWorktree } from './context.js';
 import { currentBranch } from './worktree.js';
-import { runGit } from './runGit.js';
+import { GitError, runGit } from './runGit.js';
 
 const PROTECTED_BRANCHES: Readonly<Record<string, true>> = { main: true, master: true };
 
@@ -31,6 +31,18 @@ export async function commitThread(
   return { sha };
 }
 
+/** The line git prints for the failure itself; the last lines are hints. */
+export function diagnosticLine(stderr: string): string | undefined {
+  const lines = stderr
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return (
+    lines.find((line) => /^(fatal|error):/.test(line) || line.startsWith('! [rejected]')) ??
+    lines[0]
+  );
+}
+
 /** Pushes the thread branch to `origin` and sets its upstream. */
 export async function pushThread(
   repos: Repos,
@@ -39,6 +51,14 @@ export async function pushThread(
   const { thread, worktreePath } = requireWorktree(repos, threadId);
   const branch = (await currentBranch(worktreePath)) ?? thread.branch;
   if (branch === null) throw conflict('thread is not on a branch');
-  await runGit(['push', '-u', 'origin', branch], worktreePath);
+  try {
+    await runGit(['push', '-u', 'origin', branch], worktreePath);
+  } catch (error) {
+    if (error instanceof GitError) {
+      const detail = diagnosticLine(error.stderr) ?? 'git push failed';
+      throw badRequest(`git push failed: ${detail}`);
+    }
+    throw error;
+  }
   return { branch, remote: 'origin' };
 }

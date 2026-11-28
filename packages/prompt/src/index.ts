@@ -1,4 +1,4 @@
-export { BASE_SYSTEM_PROMPT } from './base';
+export { BASE_SYSTEM_PROMPT, CHILD_BASE_SYSTEM_PROMPT, PLAN_MODE_PROMPT } from './base';
 export { TOOL_NAMES, TOOL_SCHEMAS } from './tools';
 export {
   CONFIG_TOOL,
@@ -31,9 +31,16 @@ export {
   REVIEWER_PROMPT,
   SUBAGENT_PROMPTS,
   SUBAGENT_ACTIONS,
+  SUBAGENT_DEPTHS,
+  SUBAGENT_PLANNER_TASKS,
+  SUBAGENT_REWORK_LIMIT,
+  SUBAGENT_RUN_MINUTES,
   SUBAGENT_TOOL,
   SUBAGENT_TOOL_NAME,
+  SUBAGENT_TOOL_PROFILES,
+  describeToolProfile,
   isSubagentAction,
+  isSubagentDepth,
   SUBAGENT_TYPES,
   WORKER_PROMPT,
   buildSubagentMessage,
@@ -47,6 +54,8 @@ export type {
   SubagentToolDefinition,
   SubagentType,
 } from './subagents';
+export { parseSubagentFooter } from './footer';
+export type { SubagentFooter } from './footer';
 export { buildTurnContext, estimateTokens } from './context';
 export type { ExecutionMode, TurnContextInput } from './context';
 export {
@@ -54,6 +63,7 @@ export {
   ABOUT_USER_HEADING,
   CUSTOM_INSTRUCTIONS_HEADING,
   PROJECT_RULES_HEADING,
+  REVIEW_COMMENTS_HEADING,
   type AssembledPrompt,
   type PromptAssemblyInput,
   type PromptSection,

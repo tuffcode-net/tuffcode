@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { PermissionModeSchema } from './entities.js';
+import { PermissionModeSchema, ReasoningEffortSchema, type GoalAutonomy } from './entities.js';
+import { THEME_IDS, type ThemeId } from './themes.js';
 
-export const ThemeSchema = z.enum(['dark', 'light']);
-export type Theme = z.infer<typeof ThemeSchema>;
+export const ThemeSchema = z.enum(THEME_IDS);
+export type Theme = ThemeId;
 
 export const LogLevelSchema = z.enum(['debug', 'info', 'warn', 'error']);
 export type LogLevel = z.infer<typeof LogLevelSchema>;
@@ -20,8 +21,22 @@ export const SubagentModelChoiceSchema = z.object({
   providerId: z.string().optional(),
   model: z.string().optional(),
   fallbackModel: z.string().optional(),
+  /** Absent or null inherits the provider's own reasoning effort. */
+  effort: ReasoningEffortSchema.nullable().optional(),
 });
 export type SubagentModelChoice = z.infer<typeof SubagentModelChoiceSchema>;
+
+/**
+ * Autonomy for a goal started from either entry point. Settings carry no council
+ * field, so the permission default is the user's stated trust level: full auto means
+ * the council may merge without a captain, anything stricter leaves the decision to
+ * the user. The composer and the `/council` command must agree, so both call this.
+ */
+export function councilAutonomy(
+  settings: Pick<Settings, 'defaultPermissionMode'> | null | undefined,
+): GoalAutonomy {
+  return settings?.defaultPermissionMode === 'full-auto' ? 'auto' : 'manual';
+}
 
 export const SubagentModelsSchema = z.object({
   explorer: SubagentModelChoiceSchema.default({}),

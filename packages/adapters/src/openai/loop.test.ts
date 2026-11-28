@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AdapterDeps, AdapterEvent, AdapterLogger, TurnContext } from '@tuffcode/contracts';
+import { SUBAGENT_TOOL_PROFILES } from '@tuffcode/prompt';
 import type { ChatMessage, ChatRequestBody, ChatStreamer } from './client.js';
 import { createOpenAIChatAdapter } from './index.js';
 import { compactHistory, runTurn } from './loop.js';
@@ -177,6 +178,48 @@ describe('runTurn', () => {
     });
     expect(client.requests).toHaveLength(2);
     expect(messages.some((message) => message.role === 'tool')).toBe(true);
+  });
+
+  it('stops a turn that never finishes with a visible reason', async () => {
+    const streams = Array.from({ length: 61 }, (_unused, index) =>
+      streamOf(toolCallPayload(index)),
+    );
+    const client = new FakeClient(streams);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'loop forever' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error).toMatchObject({ type: 'error' });
+    expect(error?.type === 'error' ? error.message : '').toContain('tool steps');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
+  });
+
+  it('reports a reply cut by the output cap instead of finishing quietly', async () => {
+    const client = new FakeClient([
+      streamOf([{ choices: [{ delta: { content: 'half an ans' }, finish_reason: 'length' }] }]),
+    ]);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'go' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error?.type === 'error' ? error.message : '').toContain('output token limit');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
   });
 
   it('runs two read-only calls of one step concurrently and keeps results in call order', async () => {
@@ -698,6 +741,109 @@ describe('runTurn', () => {
     );
 
     expect(client.requests[0]?.toolOptions?.extra).toBe(false);
+  });
+});
+
+describe('tool profile', () => {
+  /** One complete `write` call, so the profile sees the path it must judge. */
+  function writePayload(path: string): unknown[] {
+    return multiToolCallPayload([
+      { id: 'call_write', name: 'write', args: { path, content: 'body' } },
+    ]);
+  }
+
+  const stop = (): unknown[] => [
+    { choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] },
+  ];
+
+  it('refuses a tool the profile does not offer and forwards the profile', async () => {
+    const withRunner: AdapterDeps = { ...deps, extraTool: async () => 'ran' };
+    const client = new FakeClient([
+      streamOf(
+        multiToolCallPayload([
+          { id: 'call_cfg', name: 'config', args: { action: 'settings.set', key: 'a', value: 1 } },
+        ]),
+      ),
+      streamOf(stop()),
+    ]);
+    const events = await collect(
+      runTurn({
+        ctx: context({
+          toolOptions: {
+            subagent: true,
+            extra: true,
+            todo: true,
+            skill: true,
+            webFetch: true,
+            mcp: true,
+          },
+          toolProfile: SUBAGENT_TOOL_PROFILES.explorer,
+        }),
+        client,
+        messages: [{ role: 'user', content: 'go' }],
+        state: createToolSessionState(),
+        deps: withRunner,
+        signal: new AbortController().signal,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    expect(client.requests[0]?.toolProfile).toBe(SUBAGENT_TOOL_PROFILES.explorer);
+    const finished = events.find((event) => event.type === 'tool.finished');
+    expect(finished).toMatchObject({ isError: true });
+    expect(finished?.type === 'tool.finished' ? finished.output : '').toContain(
+      'tool "config" is not offered to this agent',
+    );
+  });
+
+  it('answers a write outside the profile and never asks for approval', async () => {
+    let approvals = 0;
+    const client = new FakeClient([streamOf(writePayload('src/a.ts')), streamOf(stop())]);
+    const messages: ChatMessage[] = [{ role: 'user', content: 'go' }];
+    const events = await collect(
+      runTurn({
+        ctx: context({ permissionMode: 'ask', toolProfile: SUBAGENT_TOOL_PROFILES.explorer }),
+        client,
+        messages,
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => {
+          approvals += 1;
+          return 'allow';
+        },
+      }),
+    );
+    const finished = events.find((event) => event.type === 'tool.finished');
+    expect(finished).toMatchObject({ isError: true });
+    expect(finished?.type === 'tool.finished' ? finished.output : '').toContain(
+      'write may touch only these paths: **/*.md',
+    );
+    expect(finished?.type === 'tool.finished' ? finished.output : '').toContain('src/a.ts');
+    expect(approvals).toBe(0);
+    await expect(readFile(join(root, 'src/a.ts'), 'utf8')).rejects.toThrow();
+  });
+
+  it('runs a write inside the profile without asking', async () => {
+    let approvals = 0;
+    const client = new FakeClient([streamOf(writePayload('docs/a.md')), streamOf(stop())]);
+    const events = await collect(
+      runTurn({
+        ctx: context({ permissionMode: 'ask', toolProfile: SUBAGENT_TOOL_PROFILES.explorer }),
+        client,
+        messages: [{ role: 'user', content: 'go' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => {
+          approvals += 1;
+          return 'allow';
+        },
+      }),
+    );
+    const finished = events.find((event) => event.type === 'tool.finished');
+    expect(finished).toMatchObject({ isError: false });
+    expect(approvals).toBe(0);
+    expect(await readFile(join(root, 'docs/a.md'), 'utf8')).toBe('body');
   });
 });
 

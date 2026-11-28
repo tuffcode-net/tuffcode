@@ -12,6 +12,7 @@ import {
   SubagentMessageSchema,
   SubagentStatusSchema,
   SubagentTypeSchema,
+  TaskStateSchema,
   ThreadSchema,
   TodoPhaseSchema,
 } from './entities.js';
@@ -88,6 +89,12 @@ export const AdapterEventSchema = z.discriminatedUnion('type', [
     retryable: z.boolean(),
   }),
   z.object({
+    /** A user-facing note about the turn, not an adapter failure. */
+    type: z.literal('notice'),
+    message: z.string(),
+    tone: z.enum(['info', 'warning']),
+  }),
+  z.object({
     type: z.literal('session.ended'),
     reason: z.string(),
   }),
@@ -133,6 +140,9 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
     z.object({
       goalId: IdSchema,
       state: GoalStateSchema,
+      /** Set when the event reports a task change, so the UI can refresh without polling. */
+      taskId: IdSchema.optional(),
+      taskState: TaskStateSchema.optional(),
     }),
   ),
   serverEvent(
@@ -178,6 +188,27 @@ export const ServerEventSchema = z.discriminatedUnion('type', [
       childId: IdSchema,
       threadId: IdSchema,
       message: SubagentMessageSchema,
+    }),
+  ),
+  /** A child is blocked on this question until the parent answers it. */
+  serverEvent(
+    'subagent.question',
+    z.object({
+      childId: IdSchema,
+      threadId: IdSchema,
+      questionId: IdSchema,
+      text: z.string(),
+    }),
+  ),
+  /** The parent or the user answered an open question; the child's turn resumes. */
+  serverEvent(
+    'subagent.answered',
+    z.object({
+      childId: IdSchema,
+      threadId: IdSchema,
+      questionId: IdSchema,
+      text: z.string(),
+      by: z.enum(['parent', 'user']),
     }),
   ),
   serverEvent(

@@ -11,6 +11,7 @@ export {
 export {
   currentBranch,
   detectDefaultBranch,
+  hasUncommittedWork,
   isGitRepo,
   provisionWorktree,
   removeWorktree,
@@ -24,8 +25,10 @@ export { createCheckpoint, listCheckpoints, revertCheckpoint } from './checkpoin
 export { getDiff, parseNameStatus } from './diff.js';
 export { commitThread, pushThread } from './commit.js';
 export {
+  assertGitHubCli,
   openPullRequest,
   parsePullRequestUrl,
+  preparePullRequest,
   type PullRequestInput,
   type PullRequestResult,
 } from './pr.js';

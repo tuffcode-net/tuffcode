@@ -13,6 +13,7 @@ import {
   isGoalTerminal,
 } from '../inspector/council-model';
 import { CouncilBoard } from './CouncilBoard';
+import { CouncilDecisions } from './CouncilDecisions';
 import type { BoardNode } from './council-board';
 import { useCouncilStatus } from './use-council-status';
 
@@ -103,6 +104,9 @@ export function CouncilThreadBoard({ threadId }: CouncilThreadBoardProps) {
             {error}
           </p>
         )}
+
+        {/* Kept outside the collapse so a pending decision never hides with the board. */}
+        <CouncilDecisions status={status} onChanged={reload} />
 
         {open ? (
           goal === null ? (

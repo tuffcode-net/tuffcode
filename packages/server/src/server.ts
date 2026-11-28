@@ -21,7 +21,9 @@ import { createResolveCommand } from './adapters/resolveCommand.js';
 import { ensureToken, verifyToken } from './auth.js';
 import { searchMemory } from './brain/search.js';
 import { createBrainStore } from './brain/store.js';
+import { createRunningBudget } from './budget.js';
 import { createCommandHandlers } from './commands/handlers.js';
+import { recoverOrphanedGoals } from './council/recover.js';
 import { createCouncil } from './council/service.js';
 import { closeDb, migrate, openDb } from './db/index.js';
 import { createRepos, type Repos } from './db/repos/index.js';
@@ -210,6 +212,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       createAdapterForProvider(provider, adapterDeps, secret, options.adapterOverrides ?? {}),
   });
   runner.recoverOrphanedRuns();
+  const recovered = await recoverOrphanedGoals({ repos, logger });
+  logger.info('council recovery finished', {
+    goals: recovered.goals,
+    tasksFailed: recovered.tasksFailed,
+    worktreesKept: recovered.worktreesKept,
+    worktreesRemoved: recovered.worktreesRemoved,
+  });
+  // One child budget for the whole process: every parent and every resume draws on it.
+  const budget = createRunningBudget(() => repos.settings.get().subagentConcurrency);
   const council = createCouncil({
     repos,
     bus,
@@ -226,6 +237,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     runner,
     logger,
     settings: () => repos.settings.get(),
+    budget,
   });
   subagentsRef = subagents;
   subagents.recoverOrphaned();

@@ -230,6 +230,7 @@ const reviewComment: ReviewComment = {
   side: 'new',
   body: 'This branch needs a test.',
   resolved: false,
+  deliveredAt: null,
   createdAt: at,
 };
 
@@ -672,11 +673,17 @@ const fixtures: Record<RpcMethod, MethodFixture> = {
   'council.cancel': { params: { goalId: 'g1' }, result: {} },
   'council.status': {
     params: { goalId: 'g1' },
-    result: { goal, tasks: [task], reviews: [review] },
+    result: { goal, tasks: [task], reviews: [review], escalations: [], plan: [] },
   },
   'council.latest': {
     params: { threadId: 't1' },
-    result: { goal, tasks: [task], reviews: [review] },
+    result: { goal, tasks: [task], reviews: [review], escalations: [], plan: [] },
+  },
+  'council.approvePlan': { params: { goalId: 'g1' }, result: {} },
+  'council.revisePlan': { params: { goalId: 'g1', feedback: 'Split the parser task' }, result: {} },
+  'council.answerEscalation': {
+    params: { taskId: 'tsk1', decision: 'revise', feedback: 'Cover the null case' },
+    result: {},
   },
   'subagents.spawn': {
     params: {
@@ -704,7 +711,36 @@ const fixtures: Record<RpcMethod, MethodFixture> = {
   },
   'subagents.messages': {
     params: { childId: 'sub-1' },
-    result: [{ id: 'sm-1', childId: 'sub-1', direction: 'to-parent', text: 'done', createdAt: at }],
+    result: [
+      {
+        id: 'sm-1',
+        childId: 'sub-1',
+        direction: 'to-parent',
+        kind: 'message',
+        text: 'done',
+        createdAt: at,
+      },
+    ],
+  },
+  'subagents.answer': {
+    params: { threadId: 't1', questionId: 'sq-1', text: 'src/a.ts' },
+    result: {},
+  },
+  'subagents.close': {
+    params: { childId: 'sub-1' },
+    result: { ...subagentView, status: 'done', closedAt: at },
+  },
+  'subagents.questions': {
+    params: { threadId: 't1' },
+    result: [
+      {
+        questionId: 'sq-1',
+        childId: 'sub-1',
+        threadId: 't1',
+        text: 'Which file should I change?',
+        createdAt: at,
+      },
+    ],
   },
   'subagents.listAll': { params: {}, result: [subagentView] },
   'commands.list': { params: { projectId: 'p1' }, result: [command] },
@@ -765,8 +801,11 @@ const expectedMethods: RpcMethod[] = [
   'comments.resolve',
   'connectors.install',
   'connectors.search',
+  'council.answerEscalation',
+  'council.approvePlan',
   'council.cancel',
   'council.latest',
+  'council.revisePlan',
   'council.start',
   'council.status',
   'diagnostics.export',
@@ -811,12 +850,15 @@ const expectedMethods: RpcMethod[] = [
   'settings.set',
   'skills.list',
   'skills.read',
+  'subagents.answer',
   'subagents.cancel',
+  'subagents.close',
   'subagents.get',
   'subagents.list',
   'subagents.listAll',
   'subagents.message',
   'subagents.messages',
+  'subagents.questions',
   'subagents.spawn',
   'terminal.close',
   'terminal.input',
@@ -913,8 +955,8 @@ function parseCommandRunResult(result: unknown) {
 }
 
 describe('rpc methods', () => {
-  it('exposes exactly 88 methods with the documented names', () => {
-    expect(RPC_METHODS).toHaveLength(88);
+  it('exposes exactly 94 methods with the documented names', () => {
+    expect(RPC_METHODS).toHaveLength(94);
     expect(RPC_METHODS.toSorted()).toEqual(expectedMethods);
     expect(Object.keys(fixtures).toSorted()).toEqual(expectedMethods);
     expect(Object.keys(methods).toSorted()).toEqual(expectedMethods);
@@ -1360,7 +1402,11 @@ describe('server events', () => {
       },
       { kind: 'event', type: 'approval.requested', payload: approval },
       { kind: 'event', type: 'terminal.data', payload: { terminalId: 'term1', data: 'ok' } },
-      { kind: 'event', type: 'council.updated', payload: { goalId: 'g1', state: 'reviewing' } },
+      {
+        kind: 'event',
+        type: 'council.updated',
+        payload: { goalId: 'g1', state: 'reviewing', taskId: 'tsk1', taskState: 'reviewing' },
+      },
       {
         kind: 'event',
         type: 'subagent.started',
@@ -1628,6 +1674,7 @@ describe('settings', () => {
   it('parses partial patches without filling defaults', () => {
     expect(SettingsPatchSchema.parse({})).toEqual({});
     expect(SettingsPatchSchema.parse({ theme: 'light' })).toEqual({ theme: 'light' });
+    expect(SettingsPatchSchema.parse({ theme: 'nord' })).toEqual({ theme: 'nord' });
     expect(SettingsPatchSchema.parse({ fontSize: 16, cursorStyle: 'block' })).toEqual({
       fontSize: 16,
       cursorStyle: 'block',

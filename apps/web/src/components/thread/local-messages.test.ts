@@ -51,6 +51,17 @@ describe('local message status', () => {
     expect(resolved?.turnId).toBe('turn-1');
   });
 
+  it('keeps a queued send marked queued with its preallocated turn id', () => {
+    const message = echo();
+    addLocalUserMessage(message);
+
+    resolveLocalUserMessage(message.id, 'turn-2', true);
+
+    const [resolved] = localUserMessages(message.threadId);
+    expect(resolved?.status).toBe('queued');
+    expect(resolved?.turnId).toBe('turn-2');
+  });
+
   it('keeps the text when a send fails and returns to pending on retry', () => {
     const message = echo();
     addLocalUserMessage(message);

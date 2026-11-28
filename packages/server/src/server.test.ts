@@ -217,7 +217,14 @@ describe('server bootstrap', () => {
       writeServerJson: false,
     });
 
-    for (const method of ['council.start', 'council.cancel', 'council.status']) {
+    for (const method of [
+      'council.start',
+      'council.cancel',
+      'council.status',
+      'council.approvePlan',
+      'council.revisePlan',
+      'council.answerEscalation',
+    ]) {
       expect(running.handlers.has(method)).toBe(true);
     }
   });

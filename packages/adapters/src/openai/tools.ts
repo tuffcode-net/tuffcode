@@ -13,11 +13,13 @@ import {
   SUBAGENT_TOOL_NAME,
   TOOL_NAMES,
   isSubagentAction,
+  isSubagentDepth,
   isSubagentType,
   type ToolName,
 } from '@tuffcode/prompt';
 import { applyEol, dominantEol, normalizeEol, resolveWithin, type Eol } from '@tuffcode/shared';
 import { isExtraToolName } from '../extra-tools.js';
+import { scanShellCommand, shellFamiliesFor, type ShellFamily } from './readonly-shell.js';
 
 const MAX_OUTPUT = 64 * 1024;
 const MAX_READ_LINES = 2000;
@@ -147,6 +149,15 @@ const DESTRUCTIVE_COMMANDS: readonly RegExp[] = [
   /\bshutdown\b/i,
 ];
 
+/**
+ * Whether a command matches the destructive list: a whole-drive or home removal, a
+ * format, diskpart, a forced push, or a shutdown. A worker profile refuses these
+ * outright, because no approval arrives to answer them.
+ */
+export function isDestructiveCommand(command: string): boolean {
+  return DESTRUCTIVE_COMMANDS.some((pattern) => pattern.test(command));
+}
+
 /** Known actions per extra tool; anything else is refused rather than guessed at. */
 const EXTRA_TOOL_ACTIONS: Record<ExtraToolName, readonly string[]> = {
   mcp: ['list', 'call'],
@@ -181,9 +192,9 @@ export function classifyExtraTool(
   }
   if (name === 'skill') return 'allow';
   if (name === 'web_fetch') {
-    // A fetch reaches the network, so it follows the bash ladder.
+    // A fetch reaches the network and leaves the repository, so ask until full-auto.
     if (mode === 'read-only') return 'deny';
-    return mode === 'ask' ? 'approve' : 'allow';
+    return mode === 'ask' || mode === 'accept-edits' ? 'approve' : 'allow';
   }
   const action = typeof args.action === 'string' ? args.action : '';
   if (ACTIONLESS_EXTRA_TOOLS[name] !== true && !EXTRA_TOOL_ACTIONS[name].includes(action)) {
@@ -197,6 +208,8 @@ export function classifyExtraTool(
     if (name === 'memory') return 'allow';
     return 'approve';
   }
+  // `config` writes provider rows and settings, so even full-auto shows one approval.
+  if (name === 'config') return 'approve';
   return 'allow';
 }
 
@@ -367,19 +380,17 @@ function isReadOnlyRipgrep(tokens: readonly string[]): boolean {
   return true;
 }
 
-function isReadOnlySegment(segment: string): boolean {
-  const tokens = segment.split(/\s+/).filter((token) => token.length > 0);
+function isReadOnlySegment(tokens: readonly string[]): boolean {
   const first = tokens[0];
-  if (first === undefined) return false;
+  if (first === undefined || first.length === 0) return false;
   // FOO=bar cmd runs cmd with a changed environment, which the allowlist cannot see.
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return false;
   for (const token of tokens) {
-    const bare = token
-      .replace(/^[(&]+/, '')
-      .replace(/[)]+$/, '')
-      .toLowerCase();
+    const bare = token.toLowerCase();
     if (FORBIDDEN_WORDS[bare] === true) return false;
     if (POWERSHELL_MUTATION_VERB.test(bare)) return false;
+    // -c sets a config, an encoded command, or a count, none of which is safe to guess at.
+    if (token === '-c' || token === '--%') return false;
   }
   const program = first.toLowerCase();
   // A path is a different binary with a familiar name, so only bare program names count.
@@ -398,28 +409,55 @@ function isReadOnlySegment(segment: string): boolean {
   return false;
 }
 
+const READ_ONLY_PROGRAM_LIST = Object.keys(READ_ONLY_PROGRAMS).join(', ');
+const READ_ONLY_POWERSHELL_LIST = Object.keys(READ_ONLY_POWERSHELL_PROGRAMS).join(', ');
+const READ_ONLY_GIT_LIST = `git ${Object.keys(GIT_READ_SUBCOMMANDS).join('/')}`;
+
 /**
- * Whether a shell command only reads. Every segment of a chain must be a conservative
- * allowlisted program, and the whole line is refused before that when it can redirect,
- * substitute, group, assign an environment, or reach a known writing verb. The allowlist
- * is the security boundary; the denials only narrow it further.
+ * Whether a command only reads when `shell` runs it. The allowlist is shared across
+ * shells; the shell decides how the line splits into words and segments, and anything
+ * its grammar cannot resolve with certainty is refused.
  */
-export function isReadOnlyCommand(command: string): boolean {
+export function isReadOnlyCommandFor(
+  command: string,
+  shell: ShellFamily,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   if (typeof command !== 'string') return false;
   const normalized = command.replace(/\r\n?/g, '\n').trim();
   if (normalized.length === 0) return false;
-  // Redirects, process substitution, grouping and PowerShell script blocks.
-  if (/[<>()`{}]/.test(normalized)) return false;
-  if (normalized.includes('--%')) return false;
-  // -c sets a config, an encoded command, or a count, none of which is safe to guess at.
-  if (/(^|\s)-c(?=\s|$)/.test(normalized)) return false;
   if (GIT_GLOBAL_FLAGS.some((flag) => normalized.includes(flag))) return false;
-  const segments = normalized.split(/&&|\|\||[;|&\n]/);
-  if (segments.length === 0) return false;
-  return segments.every((segment) => {
-    const trimmed = segment.trim();
-    return trimmed.length > 0 && isReadOnlySegment(trimmed);
-  });
+  const scan = scanShellCommand(normalized, shell, platform);
+  if ('failure' in scan) return false;
+  if (scan.segments.length === 0) return false;
+  return scan.segments.every((segment) => segment.length > 0 && isReadOnlySegment(segment));
+}
+
+/**
+ * Why a read-only turn refused a command, or null when the command only reads. The
+ * allowlist is the security boundary; the message names it, the null device for this
+ * platform, and the one merge that is still allowed, so a child can correct its command
+ * instead of guessing.
+ */
+export function readOnlyCommandRefusal(command: string): string | null {
+  const allowed =
+    `bash only runs read-only commands for this agent. Allowed: ${READ_ONLY_PROGRAM_LIST}, ` +
+    `${READ_ONLY_POWERSHELL_LIST}, ${READ_ONLY_GIT_LIST}, rg, find and grep. ` +
+    `Stderr may be merged with 2>&1 or discarded with ${process.platform === 'win32' ? '2>NUL' : '2>/dev/null'}; ` +
+    'every other redirect is refused.';
+  if (!isReadOnlyCommand(command)) return allowed;
+  return null;
+}
+
+/**
+ * Whether a shell command only reads under every shell this platform can spawn. On
+ * Windows that is PowerShell and cmd, because the resolved shell depends on what is
+ * installed; elsewhere it is bash.
+ */
+export function isReadOnlyCommand(command: string): boolean {
+  return shellFamiliesFor(process.platform).every((shell) =>
+    isReadOnlyCommandFor(command, shell, process.platform),
+  );
 }
 
 export function classifyTool(
@@ -438,8 +476,7 @@ export function classifyTool(
   if (mode === 'ask') return 'approve';
   if (mode === 'accept-edits') return name === 'bash' ? 'approve' : 'allow';
   if (name === 'bash' && typeof args.command === 'string') {
-    const command = args.command;
-    if (DESTRUCTIVE_COMMANDS.some((pattern) => pattern.test(command))) return 'approve';
+    if (isDestructiveCommand(args.command)) return 'approve';
   }
   return 'allow';
 }
@@ -1065,8 +1102,16 @@ export function classifySubagentTool(
 ): PermissionDecision {
   const action = typeof args.action === 'string' ? args.action : 'spawn';
   if (!isSubagentAction(action)) return 'deny';
-  // Reading status, waiting and reading reports change nothing; a report only posts a note.
-  if (action === 'status' || action === 'wait' || action === 'inbox' || action === 'report') {
+  // Reading status, waiting, reading reports and asking a question change nothing:
+  // ask posts one blocking question to the parent, and read only pages reports.
+  if (
+    action === 'status' ||
+    action === 'wait' ||
+    action === 'inbox' ||
+    action === 'report' ||
+    action === 'ask' ||
+    action === 'read'
+  ) {
     return 'allow';
   }
   if (mode === 'read-only') return 'deny';
@@ -1085,7 +1130,9 @@ async function subagentTool(
 ): Promise<ToolExecResult> {
   const action = typeof args.action === 'string' && args.action.length > 0 ? args.action : 'spawn';
   if (!isSubagentAction(action)) {
-    return fail('action must be one of spawn, status, wait, message, stop, inbox, report');
+    return fail(
+      'action must be one of spawn, status, wait, message, stop, inbox, report, ask, answer, close, read',
+    );
   }
   if (action !== 'spawn') {
     if (deps.subagentControl === undefined) {
@@ -1098,6 +1145,15 @@ async function subagentTool(
       typeof args.timeout_s === 'number' && Number.isFinite(args.timeout_s)
         ? args.timeout_s
         : undefined;
+    const questionId =
+      typeof args.question_id === 'string' && args.question_id.trim().length > 0
+        ? args.question_id.trim()
+        : undefined;
+    const cursor =
+      typeof args.cursor === 'string' && args.cursor.trim().length > 0
+        ? args.cursor.trim()
+        : undefined;
+    const rework = args.rework === true;
     try {
       const output = await deps.subagentControl({
         action,
@@ -1105,7 +1161,10 @@ async function subagentTool(
         ...(ctx.threadId === undefined ? {} : { threadId: ctx.threadId }),
         ...(id === undefined ? {} : { id }),
         ...(text === undefined ? {} : { text }),
+        ...(rework ? { rework } : {}),
         ...(timeout === undefined ? {} : { timeoutSeconds: timeout }),
+        ...(questionId === undefined ? {} : { questionId }),
+        ...(cursor === undefined ? {} : { cursor }),
         signal: ctx.signal,
       });
       return ok(capOutput(output));
@@ -1122,6 +1181,9 @@ async function subagentTool(
   if (typeof args.task !== 'string' || args.task.trim().length === 0) {
     return fail('task must be a non-empty string');
   }
+  if (args.depth !== undefined && !isSubagentDepth(args.depth)) {
+    return fail('depth must be quick, normal or thorough');
+  }
   const model = typeof args.model === 'string' ? args.model.trim() : '';
   try {
     const spawned = await deps.spawnSubagent({
@@ -1130,6 +1192,7 @@ async function subagentTool(
       type: args.type,
       task: args.task,
       ...(model.length === 0 ? {} : { model }),
+      ...(isSubagentDepth(args.depth) ? { depth: args.depth } : {}),
     });
     return ok(
       `subagent ${spawned.childId} (${args.type}) ${spawned.status}. Call subagent with action wait to collect its summary, status to check progress, or message to steer it.`,

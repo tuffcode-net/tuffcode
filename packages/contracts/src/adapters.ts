@@ -1,10 +1,23 @@
-import type { ApprovalChoice, PermissionMode, ProviderKind, SubagentType } from './entities.js';
+import type {
+  ApprovalChoice,
+  PermissionMode,
+  ProviderKind,
+  SubagentDepth,
+  SubagentType,
+  ToolProfile,
+} from './entities.js';
 import type { AdapterEvent } from './events.js';
 
 export interface TurnContext {
   turnId: string;
   cwd: string;
   systemPrompt: string;
+  /**
+   * The cacheable head of `systemPrompt`: base, custom instructions, project rules and
+   * skills, with none of the per-turn blocks. Providers that support prompt caching
+   * mark it as a breakpoint so a changing memory block does not invalidate it.
+   */
+  systemPromptStatic?: string;
   permissionMode: PermissionMode;
   model: string;
   brainSlice: string;
@@ -26,6 +39,8 @@ export interface TurnContext {
   reasoningEffort?: string;
   /** Which server tools this turn offers; unset keeps the adapter's construction-time choice. */
   toolOptions?: TurnToolOptions;
+  /** Set only for subagent child threads: the tools their type may be offered and use. */
+  toolProfile?: ToolProfile;
 }
 
 /** One attachment as an adapter receives it, with the source already resolved. */
@@ -38,6 +53,9 @@ export interface TurnAttachment {
   data?: string;
   /** MIME type of `data`, and the hint that marks an attachment as an image. */
   mimeType?: string;
+  /** Pixel size of an inline image, used for the context estimate. */
+  width?: number;
+  height?: number;
   kind: 'file' | 'image';
 }
 
@@ -105,8 +123,8 @@ export interface AdapterDeps {
    */
   spawnSubagent?(request: SubagentToolRequest): Promise<SubagentToolResult>;
   /**
-   * Every subagent action other than spawn (status, wait, message, stop, inbox, report).
-   * Returns the text the model reads.
+   * Every subagent action other than spawn (status, wait, message, stop, inbox, report,
+   * ask, answer, close, read). Returns the text the model reads.
    */
   subagentControl?(request: SubagentControlRequest): Promise<string>;
   /**
@@ -139,18 +157,36 @@ export interface SubagentToolRequest {
   type: SubagentType;
   task: string;
   model?: string;
+  /** quick, normal or thorough; the prompt states it and the row keeps it. */
+  depth?: SubagentDepth;
 }
 
-export type SubagentControlAction = 'status' | 'wait' | 'message' | 'stop' | 'inbox' | 'report';
+export type SubagentControlAction =
+  | 'status'
+  | 'wait'
+  | 'message'
+  | 'stop'
+  | 'inbox'
+  | 'report'
+  | 'ask'
+  | 'answer'
+  | 'close'
+  | 'read';
 
 export interface SubagentControlRequest {
   action: SubagentControlAction;
   cwd: string;
   threadId?: string;
-  /** Child id for message and stop; optional filter for status and wait. */
+  /** Child id for message, stop, close and read; optional filter for status and wait. */
   id?: string;
   text?: string;
+  /** True when this message sends reviewer findings back as a rework round. */
+  rework?: boolean;
   timeoutSeconds?: number;
+  /** The open question `answer` replies to. */
+  questionId?: string;
+  /** The last message id `read` returned; the next page starts after it. */
+  cursor?: string;
   /** The parent turn's signal, so an interrupted parent stops waiting at once. */
   signal?: AbortSignal;
 }

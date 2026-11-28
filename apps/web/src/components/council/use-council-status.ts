@@ -10,8 +10,8 @@ import { goalIdFromLatest } from './council-goal-source';
 
 export type CouncilStatusResult = RpcResult<'council.status'>;
 
-/** The inspector polls at the same cadence; this hook is another viewer of one goal. */
-const POLL_INTERVAL_MS = 3000;
+/** Events carry every task change, so the poll is only a safety net for a missed frame. */
+const POLL_INTERVAL_MS = 15_000;
 
 export interface CouncilStatusHandle {
   status: CouncilStatusResult | null;
@@ -25,9 +25,10 @@ export interface CouncilStatusHandle {
 
 /**
  * Follows the newest goal of one thread: `council.latest` finds it, `council.status`
- * reads it, `council.updated` keeps it current between polls, and a three second
- * poll covers a missed event until the goal reaches a terminal state. Starting a
- * goal stays with the composer; this hook only reads.
+ * reads it, and `council.updated` keeps it current. Every task change arrives as an
+ * event carrying `taskId` and `taskState`, so the hook reloads on it instead of
+ * polling; the fifteen second poll only covers a missed frame until the goal is
+ * terminal. Starting a goal stays with the composer; this hook only reads.
  */
 export function useCouncilStatus(threadId: string): CouncilStatusHandle {
   const rpc = useRpc();

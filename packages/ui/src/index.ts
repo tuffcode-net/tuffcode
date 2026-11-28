@@ -89,3 +89,14 @@ export {
   type TerminalCursorStyle,
   type TerminalOptions,
 } from './terminal-options';
+export {
+  ANSI_NAMES,
+  PALETTES,
+  THEME_TOKEN_NAMES,
+  paletteFor,
+  paletteToXterm,
+  type AnsiName,
+  type ThemePalette,
+  type ThemeTokenName,
+} from './themes/palettes';
+export { applyThemePalette } from './themes/apply';

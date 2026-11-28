@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildMcpUpsertParams,
   emptyMcpDraft,
+  formatMcpArg,
   isMcpHttpUrl,
   mcpAuthSummary,
   mcpDraftFromServer,
@@ -123,6 +124,21 @@ describe('parseMcpArgs', () => {
   it('splits on whitespace and drops blanks', () => {
     expect(parseMcpArgs(' -y  pkg \n C:/work ')).toEqual(['-y', 'pkg', 'C:/work']);
     expect(parseMcpArgs('   ')).toEqual([]);
+  });
+
+  it('keeps a quoted argument with spaces whole', () => {
+    expect(parseMcpArgs('-y pkg "C:/Users/me/the code/fixture.mjs"')).toEqual([
+      '-y',
+      'pkg',
+      'C:/Users/me/the code/fixture.mjs',
+    ]);
+    expect(parseMcpArgs("'C:/a b/c.mjs'")).toEqual(['C:/a b/c.mjs']);
+  });
+
+  it('round-trips a stored argument with spaces through the form', () => {
+    const args = ['-y', 'pkg', 'C:/Users/me/the code/fixture.mjs'];
+    const text = args.map(formatMcpArg).join('\n');
+    expect(parseMcpArgs(text)).toEqual(args);
   });
 });
 

@@ -62,6 +62,8 @@ export type BrainRelation = z.infer<typeof BrainRelationSchema>;
 export const GoalStateSchema = z.enum([
   'intake',
   'planning',
+  /** The plan exists and a manual goal waits for the captain to approve or revise it. */
+  'awaiting-approval',
   'provisioning',
   'running',
   'reviewing',
@@ -126,8 +128,19 @@ export const SubagentTypeSchema = z.enum([
 ]);
 export type SubagentType = z.infer<typeof SubagentTypeSchema>;
 
+/** How thoroughly a child works. The caller sets it at spawn; the prompt and the row keep it. */
+export const SubagentDepthSchema = z.enum(['quick', 'normal', 'thorough']);
+export type SubagentDepth = z.infer<typeof SubagentDepthSchema>;
+
 export const SubagentStatusSchema = z.enum(['queued', 'running', 'done', 'failed', 'cancelled']);
 export type SubagentStatus = z.infer<typeof SubagentStatusSchema>;
+
+/**
+ * The status a child declares in its own footer. It is narrower than the row status:
+ * `done` and `partial` both settle the row as done, `blocked` settles it as failed.
+ */
+export const SubagentFooterStatusSchema = z.enum(['done', 'partial', 'blocked']);
+export type SubagentFooterStatus = z.infer<typeof SubagentFooterStatusSchema>;
 
 /** A reasoning level name: the built-in ladder or a custom provider level such as `max`. */
 export const ReasoningLevelSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,23}$/);
@@ -174,11 +187,40 @@ export const EventRowSchema = z.object({
 });
 export type EventRow = z.infer<typeof EventRowSchema>;
 
+/**
+ * One user attachment. Exactly one source is present: `path` for a file inside the
+ * thread worktree, `data` for bytes the renderer already encoded (a pasted or
+ * downscaled image, which has no filesystem home the server may read), or `id` for
+ * bytes the server stored under its own data directory when the message was written.
+ */
+export const AttachmentSchema = z
+  .object({
+    name: z.string(),
+    path: z.string().optional(),
+    /** Base64 payload without the `data:` prefix; `mimeType` names the format. */
+    data: z.string().optional(),
+    /** Content-addressed id of a stored attachment, the form persisted messages carry. */
+    id: z.string().optional(),
+    /** Pixel size after downscaling, for the context estimate and the chip tooltip. */
+    width: z.number().int().positive().optional(),
+    height: z.number().int().positive().optional(),
+    mimeType: z.string().optional(),
+  })
+  .refine(
+    (attachment) =>
+      [attachment.path, attachment.data, attachment.id].filter((value) => value !== undefined)
+        .length === 1,
+    { message: 'an attachment carries exactly one of a path, inline data, or a stored id' },
+  );
+export type Attachment = z.infer<typeof AttachmentSchema>;
+
 export const MessageSchema = z.object({
   id: IdSchema,
   threadId: IdSchema,
   role: MessageRoleSchema,
   content: z.string(),
+  /** What the user attached to this message; absent on assistant and tool rows. */
+  attachments: AttachmentSchema.array().optional(),
   createdAt: IsoDateTimeSchema,
 });
 export type Message = z.infer<typeof MessageSchema>;
@@ -377,6 +419,24 @@ export const SubagentViewSchema = z.object({
   finishedAt: IsoDateTimeSchema.nullable().optional(),
   /** Messages from the child the parent has not read yet. */
   unread: z.number().int().nonnegative().optional(),
+  /**
+   * Set when the parent closed the child. The status stays one of the five values, so
+   * the row keeps its final outcome; a closed child refuses new work and keeps its
+   * transcript.
+   */
+  closedAt: z.string().nullable().optional(),
+  /**
+   * The latest stored full report. `summary` is bounded, so a truncated summary names
+   * this row: `subagent read <childId>` returns the whole text. Absent for a child
+   * that never settled with an answer.
+   */
+  reportId: IdSchema.nullable().optional(),
+  reportChars: z.number().int().nonnegative().nullable().optional(),
+  /**
+   * The status the child declared in its footer. `partial` and `blocked` both narrow
+   * what the row status can say, so the declaration is kept next to it.
+   */
+  footerStatus: SubagentFooterStatusSchema.nullable().optional(),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
 });
@@ -385,10 +445,30 @@ export type SubagentView = z.infer<typeof SubagentViewSchema>;
 export const SubagentMessageDirectionSchema = z.enum(['to-child', 'to-parent']);
 export type SubagentMessageDirection = z.infer<typeof SubagentMessageDirectionSchema>;
 
+/**
+ * One child blocked on a question the parent has not answered. The UI lists these
+ * after a reload so an open question stays answerable without a new event.
+ */
+export const SubagentQuestionViewSchema = z.object({
+  questionId: IdSchema,
+  childId: IdSchema,
+  /** The parent thread the question was posted to. */
+  threadId: IdSchema,
+  text: z.string(),
+  createdAt: IsoDateTimeSchema,
+});
+export type SubagentQuestionView = z.infer<typeof SubagentQuestionViewSchema>;
+
+/** A plain note, a child's report, its blocking question, or the parent's answer. */
+export const SubagentMessageKindSchema = z.enum(['message', 'report', 'question', 'answer']);
+export type SubagentMessageKind = z.infer<typeof SubagentMessageKindSchema>;
+
 export const SubagentMessageSchema = z.object({
   id: IdSchema,
   childId: IdSchema,
   direction: SubagentMessageDirectionSchema,
+  /** Rows written before the kind column read as a plain message. */
+  kind: SubagentMessageKindSchema.default('message'),
   text: z.string(),
   createdAt: IsoDateTimeSchema,
 });
@@ -502,6 +582,8 @@ export const ReviewCommentSchema = z.object({
   side: ReviewCommentSideSchema,
   body: z.string(),
   resolved: z.boolean(),
+  /** When a turn prompt first carried the comment; null while it is still unsent. */
+  deliveredAt: IsoDateTimeSchema.nullable(),
   createdAt: IsoDateTimeSchema,
 });
 export type ReviewComment = z.infer<typeof ReviewCommentSchema>;
@@ -637,21 +719,3 @@ export const ConnectorEntrySchema = z.object({
   repository: z.string().nullable(),
 });
 export type ConnectorEntry = z.infer<typeof ConnectorEntrySchema>;
-
-/**
- * One user attachment. Exactly one source is present: `path` for a file inside the
- * thread worktree, `data` for bytes the renderer already encoded (a pasted or
- * downscaled image, which has no filesystem home the server may read).
- */
-export const AttachmentSchema = z
-  .object({
-    name: z.string(),
-    path: z.string().optional(),
-    /** Base64 payload without the `data:` prefix; `mimeType` names the format. */
-    data: z.string().optional(),
-    mimeType: z.string().optional(),
-  })
-  .refine((attachment) => (attachment.path === undefined) !== (attachment.data === undefined), {
-    message: 'an attachment carries either a path or inline data, never both',
-  });
-export type Attachment = z.infer<typeof AttachmentSchema>;

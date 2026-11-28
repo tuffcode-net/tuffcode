@@ -1,7 +1,8 @@
 import type { Repos } from '../db/repos/index.js';
 import { badRequest, conflict, RpcError } from '../errors.js';
+import { commitThread, diagnosticLine, pushThread } from './commit.js';
 import { requireWorktree } from './context.js';
-import { runExecutable, GitError } from './runGit.js';
+import { runExecutable, tryRunGit, GitError } from './runGit.js';
 import { currentBranch } from './worktree.js';
 
 export interface PullRequestInput {
@@ -16,6 +17,48 @@ export interface PullRequestResult {
 }
 
 /**
+ * Checks `gh` before anything leaves the machine. Without this a missing or signed-out
+ * CLI would only surface after the branch had already been committed and pushed.
+ */
+export async function assertGitHubCli(repos: Repos, threadId: string): Promise<void> {
+  const { worktreePath } = requireWorktree(repos, threadId);
+  try {
+    await runExecutable('gh', ['auth', 'status'], worktreePath);
+  } catch (error) {
+    if (!(error instanceof GitError)) throw error;
+    if (error.spawnCode === 'ENOENT') {
+      throw new RpcError('provider-unavailable', 'GitHub CLI (gh) not found');
+    }
+    const detail = diagnosticLine(error.stderr) ?? 'not signed in';
+    throw badRequest(`GitHub CLI (gh) is not ready: ${detail}`);
+  }
+}
+
+/**
+ * Makes the branch safe to open a pull request from: commits any leftover work and
+ * pushes it. A thread the agent already committed has nothing to commit, which is not
+ * an error; the push still runs so the remote is current.
+ */
+export async function preparePullRequest(
+  repos: Repos,
+  threadId: string,
+  title: string,
+): Promise<void> {
+  // Validate before touching the tree: a bad title must not commit and push work.
+  if (title.trim().length === 0) throw badRequest('pull request title is required');
+  try {
+    await commitThread(repos, threadId, `Changes from ${title}`);
+  } catch (error) {
+    const nothingToCommit =
+      error instanceof RpcError &&
+      error.code === 'conflict' &&
+      error.message.includes('nothing to commit');
+    if (!nothingToCommit) throw error;
+  }
+  await pushThread(repos, threadId);
+}
+
+/**
  * Finds the pull request URL in `gh pr create` output. gh prints the URL on its own
  * line (plus human-readable text around it), so the last matching line wins.
  */
@@ -27,6 +70,24 @@ export function parsePullRequestUrl(output: string): PullRequestResult | null {
   const number = Number(last[1]);
   if (!Number.isSafeInteger(number) || number <= 0) return null;
   return { url, number };
+}
+
+/**
+ * `gh pr create --base` takes a branch, never a commit. Council records a temporary
+ * integration branch as the merge commit it started from, so a recorded value that is
+ * not a local or remote branch falls back to the project's default branch.
+ */
+async function branchBase(cwd: string, recorded: string, fallback: string): Promise<string> {
+  const local = await tryRunGit(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${recorded}`],
+    cwd,
+  );
+  if (local.ok) return recorded;
+  const remote = await tryRunGit(
+    ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${recorded}`],
+    cwd,
+  );
+  return remote.ok ? recorded : fallback;
 }
 
 /**
@@ -45,7 +106,8 @@ export async function openPullRequest(
   const branch = (await currentBranch(worktreePath)) ?? thread.branch;
   if (branch === null) throw conflict('thread is not on a branch');
   const project = repos.projects.get(thread.projectId);
-  const base = thread.baseBranch ?? project?.defaultBranch ?? 'main';
+  const fallbackBase = project?.defaultBranch ?? 'main';
+  const base = await branchBase(worktreePath, thread.baseBranch ?? fallbackBase, fallbackBase);
   const args = [
     'pr',
     'create',
@@ -69,14 +131,8 @@ export async function openPullRequest(
       if (error.spawnCode === 'ENOENT') {
         throw new RpcError('provider-unavailable', 'GitHub CLI (gh) not found');
       }
-      const detail = error.stderr
-        .trim()
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .pop();
-      throw badRequest(
-        detail === undefined ? 'gh pr create failed' : `gh pr create failed: ${detail}`,
-      );
+      const detail = diagnosticLine(error.stderr) ?? 'gh pr create failed';
+      throw badRequest(`gh pr create failed: ${detail}`);
     }
     throw error;
   }

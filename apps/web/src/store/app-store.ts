@@ -135,6 +135,8 @@ export interface SubagentChild {
   activity?: string | null;
   /** Reports from the child the parent has not read. */
   unread?: number;
+  /** Set when the parent closed the child; the transcript stays readable. */
+  closedAt: string | null;
   /** The mailbox both ways, oldest first, bounded. */
   messages: SubagentMessage[];
   /**
@@ -157,6 +159,31 @@ export interface SubagentMessageInput {
   childId: string;
   threadId: string;
   message: SubagentMessage;
+}
+
+/** One child blocked on a question the parent or the user has not answered yet. */
+export interface SubagentQuestion {
+  questionId: string;
+  childId: string;
+  /** The parent thread the question was posted to. */
+  threadId: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface SubagentQuestionInput {
+  childId: string;
+  threadId: string;
+  questionId: string;
+  text: string;
+}
+
+export interface SubagentAnsweredInput {
+  childId: string;
+  threadId: string;
+  questionId: string;
+  text: string;
+  by: 'parent' | 'user';
 }
 
 /** Mailbox rows kept per child in the store. */
@@ -203,9 +230,24 @@ export function newSubagentChild(input: SubagentStartedInput, now: string): Suba
     finishedAt: null,
     events: [],
     nextSeq: 0,
+    closedAt: null,
     messages: [],
     awaitingReopen: false,
   };
+}
+
+/** Drops every open question of one child: it settled, so nothing can answer it now. */
+function withoutChildQuestions(
+  questions: Record<string, SubagentQuestion>,
+  childId: string,
+): Record<string, SubagentQuestion> {
+  let next: Record<string, SubagentQuestion> | null = null;
+  for (const [questionId, question] of Object.entries(questions)) {
+    if (question.childId !== childId) continue;
+    next ??= { ...questions };
+    delete next[questionId];
+  }
+  return next ?? questions;
 }
 
 function telemetryOfView(view: SubagentView): Partial<SubagentChild> {
@@ -242,6 +284,7 @@ export function mergeSubagentView(
       startedAt: view.startedAt ?? view.createdAt,
       finishedAt: view.finishedAt ?? finishedAt,
       ...telemetryOfView(view),
+      closedAt: view.closedAt ?? null,
       messages: [],
       awaitingReopen: false,
       events: [],
@@ -260,6 +303,7 @@ export function mergeSubagentView(
     startedAt: child.startedAt ?? view.startedAt ?? view.createdAt,
     finishedAt: child.finishedAt ?? view.finishedAt ?? finishedAt,
     ...telemetryOfView(view),
+    closedAt: view.closedAt ?? child.closedAt,
     status,
   };
 }
@@ -280,6 +324,8 @@ export interface AppState {
   activeThreadId: string | null;
   /** Every known child across threads, keyed by `childId`. */
   subagents: Record<string, SubagentChild>;
+  /** Open child questions, keyed by `questionId`, until an answer or the child settles. */
+  questions: Record<string, SubagentQuestion>;
   subagentPane: SubagentPaneState;
   /** The live todo list per thread, from `todo.updated` and `todos.get`. */
   todos: Record<string, TodoPhase[]>;
@@ -306,6 +352,15 @@ export interface AppState {
   subagentFinished(input: SubagentFinishedInput): void;
   subagentTelemetry(input: SubagentTelemetryInput): void;
   subagentMessage(input: SubagentMessageInput): void;
+  /** A child is blocked on this question; the Activity panel offers an answer box. */
+  subagentQuestion(input: SubagentQuestionInput): void;
+  /** The question was answered (by the parent or the user) or the child settled. */
+  subagentAnswered(input: SubagentAnsweredInput): void;
+  /**
+   * Seeds questions fetched from the server after a reload. An id that already
+   * arrived by event keeps the event's copy, so a merge never clobbers live state.
+   */
+  mergeSubagentQuestions(questions: readonly SubagentQuestion[]): void;
   setTodos(threadId: string, phases: TodoPhase[]): void;
   setPlugins(plugins: InstalledPlugin[]): void;
   mergeSubagentViews(threadId: string, views: readonly SubagentView[]): void;
@@ -325,6 +380,7 @@ const initialState = {
   providers: [] as ProviderView[],
   activeThreadId: null,
   subagents: {} as Record<string, SubagentChild>,
+  questions: {} as Record<string, SubagentQuestion>,
   subagentPane: { open: false, activeChildId: null } as SubagentPaneState,
   todos: {} as Record<string, TodoPhase[]>,
   plugins: [] as InstalledPlugin[],
@@ -419,6 +475,9 @@ export function createAppStore() {
         const subagents = Object.fromEntries(
           Object.entries(state.subagents).filter(([, child]) => child.threadId !== threadId),
         );
+        const questions = Object.fromEntries(
+          Object.entries(state.questions).filter(([, question]) => question.threadId !== threadId),
+        );
         const activeChildId = state.subagentPane.activeChildId;
         const activeChildGone = activeChildId !== null && subagents[activeChildId] === undefined;
         return {
@@ -426,6 +485,7 @@ export function createAppStore() {
           events,
           messages,
           subagents,
+          questions,
           subagentPane: activeChildGone ? { open: false, activeChildId: null } : state.subagentPane,
           activeThreadId: state.activeThreadId === threadId ? null : state.activeThreadId,
         };
@@ -547,6 +607,7 @@ export function createAppStore() {
     subagentFinished: (input) =>
       set((state) => {
         const now = new Date().toISOString();
+        const questions = withoutChildQuestions(state.questions, input.childId);
         const existing = state.subagents[input.childId];
         if (existing === undefined) {
           // The finished frame can outrun its started frame after a reconnect.
@@ -559,7 +620,7 @@ export function createAppStore() {
             summary: input.summary ?? null,
             finishedAt: now,
           };
-          return { subagents: { ...state.subagents, [input.childId]: child } };
+          return { subagents: { ...state.subagents, [input.childId]: child }, questions };
         }
         const child: SubagentChild = {
           ...existing,
@@ -567,7 +628,7 @@ export function createAppStore() {
           summary: input.summary ?? existing.summary,
           finishedAt: existing.finishedAt ?? now,
         };
-        return { subagents: { ...state.subagents, [input.childId]: child } };
+        return { subagents: { ...state.subagents, [input.childId]: child }, questions };
       }),
 
     subagentTelemetry: (input) =>
@@ -600,6 +661,39 @@ export function createAppStore() {
             (!toParent && isTerminalSubagentStatus(existing.status) && existing.status !== 'cancelled'),
         };
         return { subagents: { ...state.subagents, [input.childId]: child } };
+      }),
+
+    subagentQuestion: (input) =>
+      set((state) => ({
+        questions: {
+          ...state.questions,
+          [input.questionId]: {
+            questionId: input.questionId,
+            childId: input.childId,
+            threadId: input.threadId,
+            text: input.text,
+            createdAt: new Date().toISOString(),
+          },
+        },
+      })),
+
+    subagentAnswered: (input) =>
+      set((state) => {
+        if (state.questions[input.questionId] === undefined) return {};
+        const questions = { ...state.questions };
+        delete questions[input.questionId];
+        return { questions };
+      }),
+
+    mergeSubagentQuestions: (incoming) =>
+      set((state) => {
+        let next: Record<string, SubagentQuestion> | null = null;
+        for (const question of incoming) {
+          if (state.questions[question.questionId] !== undefined) continue;
+          next ??= { ...state.questions };
+          next[question.questionId] = question;
+        }
+        return next === null ? {} : { questions: next };
       }),
 
     setTodos: (threadId, phases) => set((state) => ({ todos: { ...state.todos, [threadId]: phases } })),

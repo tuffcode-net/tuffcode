@@ -443,6 +443,15 @@ export function buildPromptBlocks(
       });
       continue;
     }
+    if (attachment.kind === 'image' && attachment.data !== undefined) {
+      // The agent cannot take bytes and has no path to read, so name the image instead
+      // of dropping it without a trace.
+      blocks.push({
+        type: 'text',
+        text: `[Image attached: ${attachment.name ?? 'image'} - this agent cannot receive images]`,
+      });
+      continue;
+    }
     if (attachment.path === undefined) continue;
     blocks.push({
       type: 'resource_link',

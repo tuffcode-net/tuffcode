@@ -10,6 +10,7 @@ import {
   type ProviderConfig,
   type TurnContext,
 } from '@tuffcode/contracts';
+import { SUBAGENT_TOOL_PROFILES } from '@tuffcode/prompt';
 import {
   createClaudeAdapter,
   type ClaudePermissionResult,
@@ -333,6 +334,27 @@ describe('createClaudeAdapter', () => {
     });
   });
 
+  it('names an attachment in the prompt instead of dropping it', async () => {
+    const calls: RecordedCall[] = [];
+    const adapter = await createClaudeAdapter(provider, deps, {
+      queryFn: recordingQuery([], calls),
+    });
+
+    await drain(
+      adapter.send('what is this?', {
+        ...turnContext(),
+        attachments: [
+          { kind: 'image', name: 'shot.png', mimeType: 'image/png', data: 'AAAA' },
+        ],
+      }),
+    );
+
+    const prompt = calls.at(-1)?.prompt ?? '';
+    expect(prompt).toContain('what is this?');
+    expect(prompt).toContain('Attachments:');
+    expect(prompt).toContain('shot.png (inline image; this provider cannot receive image bytes)');
+  });
+
   it('passes the reasoning level as the SDK effort', async () => {
     const calls: RecordedCall[] = [];
     const adapter = await createClaudeAdapter(provider, deps, {
@@ -354,6 +376,33 @@ describe('createClaudeAdapter', () => {
     await drain(adapter.send('hi', turnContext()));
 
     expect(calls.at(-1)?.options).not.toHaveProperty('mcpServers');
+  });
+
+  it('removes Write and Edit for a read-only child and keeps them for a worker', async () => {
+    const calls: RecordedCall[] = [];
+    const adapter = await createClaudeAdapter(provider, deps, {
+      queryFn: recordingQuery([], calls),
+    });
+
+    await drain(
+      adapter.send('hi', {
+        ...turnContext(),
+        permissionMode: 'read-only',
+        toolProfile: SUBAGENT_TOOL_PROFILES.explorer,
+      }),
+    );
+    const explorerTools = calls.at(-1)?.options.disallowedTools ?? [];
+    expect(explorerTools).toContain('Write');
+    expect(explorerTools).toContain('Edit');
+
+    await drain(
+      adapter.send('hi', {
+        ...turnContext(),
+        permissionMode: 'accept-edits',
+        toolProfile: SUBAGENT_TOOL_PROFILES.worker,
+      }),
+    );
+    expect(calls.at(-1)?.options).not.toHaveProperty('disallowedTools');
   });
 
   it('uses the configured executable and maps every permission mode', async () => {

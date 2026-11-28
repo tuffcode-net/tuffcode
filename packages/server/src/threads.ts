@@ -1,5 +1,6 @@
 import type { ExecutionMode, PermissionMode, Thread } from '@tuffcode/contracts';
 import { newId, worktreesRoot } from '@tuffcode/shared';
+import { removeStoredAttachments } from './attachments/store.js';
 import type { Repos } from './db/repos/index.js';
 import { badRequest, conflict, notFound, RpcError } from './errors.js';
 import { provisionWorktree, removeWorktree, samePath } from './git/worktree.js';
@@ -214,6 +215,16 @@ export function updateThread(repos: Repos, request: UpdateThreadRequest): Thread
 }
 
 /**
+ * Deletes the stored bytes behind the given ids unless another message still references
+ * them. The store is content-addressed, so one image sent twice is one file.
+ */
+async function pruneAttachmentBytes(repos: Repos, candidates: readonly string[]): Promise<void> {
+  if (candidates.length === 0) return;
+  const kept = new Set(repos.messages.attachmentIds());
+  await removeStoredAttachments(candidates.filter((id) => !kept.has(id)));
+}
+
+/**
  * Deletes the thread row. With `removeWorktree` the checkout is removed from git and
  * disk first; without it the directory is left in place for manual recovery. A
  * folder-backed thread (null branch, project path) owns no worktree, so its delete
@@ -233,7 +244,11 @@ export async function deleteThread(
       });
     }
   }
+  // The thread's rows cascade on delete, so the ids have to be read first. Bytes that
+  // another message still references stay, because the store is content-addressed.
+  const candidates = repos.messages.attachmentIdsOfThread(thread.id);
   repos.threads.remove(id);
+  await pruneAttachmentBytes(repos, candidates);
 }
 
 /** Messages kept verbatim when a thread is compacted; the rest fold into a digest. */
@@ -251,13 +266,16 @@ export interface ClearThreadResult {
  * Empties a thread's transcript and event log. The caller drops the cached adapter
  * session first, so the model starts without the earlier conversation either.
  */
-export function clearThread(repos: Repos, threadId: string): ClearThreadResult {
+export async function clearThread(repos: Repos, threadId: string): Promise<ClearThreadResult> {
   const thread = getThread(repos, threadId);
   if (thread.status === 'running') throw conflict('stop the running turn before clearing');
-  return repos.transaction(() => ({
+  const candidates = repos.messages.attachmentIdsOfThread(thread.id);
+  const result = repos.transaction(() => ({
     messages: repos.messages.removeByThread(thread.id),
     events: repos.events.removeByThread(thread.id),
   }));
+  await pruneAttachmentBytes(repos, candidates);
+  return result;
 }
 
 export interface CompactThreadResult {
@@ -275,11 +293,11 @@ function digestLine(role: string, content: string): string {
  * The transcript the UI renders keeps only the recent rows; the digest preserves a
  * short record of what was removed.
  */
-export function compactThread(
+export async function compactThread(
   repos: Repos,
   threadId: string,
   instructions = '',
-): CompactThreadResult {
+): Promise<CompactThreadResult> {
   const thread = getThread(repos, threadId);
   if (thread.status === 'running') throw conflict('stop the running turn before compacting');
   const messages = repos.messages.list(thread.id, 1000);
@@ -298,6 +316,12 @@ export function compactThread(
   }
   if (lines.length > 0) digest += `\n${lines.join('\n')}`;
   const createdAt = new Date().toISOString();
+  const candidates: string[] = [];
+  for (const message of removed) {
+    for (const attachment of message.attachments ?? []) {
+      if (attachment.id !== undefined) candidates.push(attachment.id);
+    }
+  }
   repos.transaction(() => {
     repos.messages.removeMany(removed.map((message) => message.id));
     repos.messages.add({
@@ -308,5 +332,6 @@ export function compactThread(
       createdAt,
     });
   });
+  await pruneAttachmentBytes(repos, candidates);
   return { removed: removed.length, kept: messages.length - removed.length };
 }

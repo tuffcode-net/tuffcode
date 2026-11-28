@@ -16,7 +16,9 @@ test('adds, tests and removes a stdio MCP server', async ({ session }) => {
   await page.getByTestId('mcp-add-server').click();
   await page.getByTestId('mcp-label-input').fill('Echo fixture');
   await page.getByTestId('mcp-command-input').fill('node');
-  await page.getByLabel('Arguments', { exact: true }).fill(ECHO_SERVER_PATH);
+  await page
+    .getByLabel('Arguments', { exact: true })
+    .fill(`"${ECHO_SERVER_PATH}"`);
   await page.locator('form').getByRole('button', { name: 'Add server' }).click();
 
   const row = page.getByRole('listitem').filter({ hasText: 'Echo fixture' });

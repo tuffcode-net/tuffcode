@@ -1,5 +1,12 @@
+import type { ToolProfile } from '@tuffcode/contracts';
+import { SUBAGENT_TOOL_PROFILES, TOOL_SCHEMAS } from '@tuffcode/prompt';
 import { describe, expect, it } from 'vitest';
-import { allowedToolSchemas, isParallelSafeTool, RepeatedToolCallGuard } from './tool-policy.js';
+import {
+  allowedToolSchemas,
+  isParallelSafeTool,
+  profileAllows,
+  RepeatedToolCallGuard,
+} from './tool-policy.js';
 
 describe('allowedToolSchemas', () => {
   it('offers the six core tools when the allowlist is unset', () => {
@@ -44,41 +51,119 @@ describe('allowedToolSchemas', () => {
   });
 });
 
-describe('allowedToolSchemas with a tool profile', () => {
-  it('offers only the core tools the profile names', () => {
-    const profile = { offer: ['read', 'grep'], bash: 'none' as const };
-    expect(allowedToolSchemas(undefined, {}, profile).map((tool) => tool.name)).toEqual([
+describe('tool profile', () => {
+  const explorer = SUBAGENT_TOOL_PROFILES.explorer;
+  const allServerTools = {
+    subagent: true,
+    extra: true,
+    todo: true,
+    skill: true,
+    webFetch: true,
+    mcp: true,
+  };
+
+  it('offers only what the profile names, with the write limit spelled out', () => {
+    const tools = allowedToolSchemas(undefined, allServerTools, explorer);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'bash',
       'read',
+      'edit',
+      'write',
+      'glob',
       'grep',
+      'subagent',
+      'mcp',
+      'memory',
+      'todo',
+      'web_fetch',
     ]);
+    expect(tools.map((tool) => tool.name)).not.toContain('config');
+    expect(tools.map((tool) => tool.name)).not.toContain('skill');
+    const write = tools.find((tool) => tool.name === 'write');
+    expect(write?.description).toContain('You may write only these paths: **/*.md.');
+    const bash = tools.find((tool) => tool.name === 'bash');
+    expect(bash?.description).toContain('Read-only commands only');
+    // The shared schemas stay untouched, so the prompt budget test still sees them.
+    expect(TOOL_SCHEMAS.find((tool) => tool.name === 'write')?.description).not.toContain(
+      'You may write only',
+    );
   });
 
-  it('drops a server tool the profile does not offer', () => {
-    const profile = { offer: ['read'], bash: 'none' as const };
-    expect(
-      allowedToolSchemas(['read'], { subagent: true, extra: true }, profile).map(
-        (tool) => tool.name,
-      ),
-    ).toEqual(['read']);
+  it('offers the subagent tool only when the profile names an action for it', () => {
+    const noDelegation: ToolProfile = { offer: ['read'], bash: 'none' };
+    const offered = allowedToolSchemas(undefined, { subagent: true }, noDelegation);
+    expect(offered.map((tool) => tool.name)).toEqual(['read']);
   });
 
-  it('matches an extra tool offered by one of its actions', () => {
-    const profile = { offer: ['read', 'subagent:spawn', 'memory:search'], bash: 'none' as const };
-    expect(
-      allowedToolSchemas(['read'], { subagent: true, extra: true }, profile).map(
-        (tool) => tool.name,
-      ),
-    ).toEqual(['read', 'subagent', 'memory']);
+  it('judges a write by the profile globs, case-insensitively', () => {
+    expect(profileAllows('write', { path: 'docs/notes.md' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    expect(profileAllows('write', { path: 'README.MD' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    expect(profileAllows('edit', { path: 'docs/notes.md' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    const refused = profileAllows('write', { path: 'src/a.ts' }, explorer, 'C:/wt');
+    expect(refused.allowed).toBe(false);
+    expect(refused.allowed === false ? refused.reason : '').toContain(
+      'write may touch only these paths: **/*.md',
+    );
+    expect(refused.allowed === false ? refused.reason : '').toContain('src/a.ts');
+    expect(profileAllows('write', { path: '../x.md' }, explorer, 'C:/wt').allowed).toBe(false);
   });
 
-  it('spells the profile limits out without mutating the shared schema', () => {
-    const profile = { offer: ['bash', 'write'], bash: 'read-only' as const, writeGlobs: ['src/**'] };
-    const offered = allowedToolSchemas(undefined, {}, profile);
-    expect(offered.map((tool) => tool.name)).toEqual(['bash', 'write']);
-    const write = offered.find((tool) => tool.name === 'write');
-    expect(write?.description).toContain('src/**');
-    const plain = allowedToolSchemas().find((tool) => tool.name === 'write');
-    expect(plain?.description).not.toContain('src/**');
+  it('judges bash by the profile rule, not the permission mode', () => {
+    const worker = SUBAGENT_TOOL_PROFILES.worker;
+    expect(profileAllows('bash', { command: 'rm -rf /' }, worker, 'C:/wt').allowed).toBe(false);
+    expect(profileAllows('bash', { command: 'pnpm test' }, worker, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    expect(profileAllows('bash', { command: 'pnpm test' }, explorer, 'C:/wt').allowed).toBe(false);
+    const refused = profileAllows('bash', { command: 'pnpm test' }, explorer, 'C:/wt');
+    const reason = refused.allowed === false ? refused.reason : '';
+    expect(reason).toContain('git status/log/show');
+    // The hint names the null device of the shell this platform spawns, and only that one.
+    expect(reason).toContain(process.platform === 'win32' ? '2>NUL' : '2>/dev/null');
+    expect(profileAllows('bash', { command: 'git status 2>&1' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    expect(profileAllows('bash', { command: 'git status' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    const noBash: ToolProfile = { offer: ['bash'], bash: 'none' };
+    expect(profileAllows('bash', { command: 'ls' }, noBash, 'C:/wt').allowed).toBe(false);
+  });
+
+  it('names the tools a child may use when one is refused', () => {
+    const verdict = profileAllows('config', { action: 'settings.set' }, explorer, 'C:/wt');
+    expect(verdict.allowed).toBe(false);
+    const reason = verdict.allowed === false ? verdict.reason : '';
+    expect(reason).toContain('is not offered to this agent; it may use:');
+    expect(reason).toContain('read');
+    expect(reason).toContain('bash');
+    expect(reason.split('it may use: ')[1] ?? '').not.toContain('config');
+  });
+
+  it('names the actions a child may use and refuses the rest', () => {
+    const spawn = profileAllows('subagent', { action: 'spawn' }, explorer, 'C:/wt');
+    expect(spawn.allowed).toBe(false);
+    expect(spawn.allowed === false ? spawn.reason : '').toContain(
+      'subagent only offers these actions: status, report, ask',
+    );
+    expect(profileAllows('subagent', { action: 'report' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
+    // No action defaults to spawn, which a child never gets.
+    expect(profileAllows('subagent', {}, explorer, 'C:/wt').allowed).toBe(false);
+    expect(profileAllows('config', { action: 'settings.set' }, explorer, 'C:/wt').allowed).toBe(
+      false,
+    );
+    expect(profileAllows('memory', { action: 'add', text: 'x' }, explorer, 'C:/wt').allowed).toBe(
+      false,
+    );
+    expect(profileAllows('read', { path: 'a.ts' }, explorer, 'C:/wt')).toEqual({ allowed: true });
   });
 });
 

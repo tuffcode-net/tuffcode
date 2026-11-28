@@ -194,7 +194,9 @@ async function sendPrompt(
       text,
       ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
     });
-    if (messageId !== null) resolveLocalUserMessage(messageId, result.turnId);
+    if (messageId !== null) {
+      resolveLocalUserMessage(messageId, result.turnId, result.queued === true);
+    }
   } catch (error) {
     if (messageId !== null) failLocalUserMessage(messageId);
     throw error;

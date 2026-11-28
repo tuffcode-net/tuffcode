@@ -29,7 +29,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
   type RefObject,
@@ -43,7 +42,9 @@ import { councilSummary } from '../council/council-goal';
 import { useCouncilGoal } from '../council/use-council-goal';
 import { requestInspectorTab } from '../inspector/panel-requests';
 import { ModelMenu } from '../models/ModelMenu';
-import { takePendingDraft } from './composer-drafts';
+import { useProviderModels } from '../models/use-provider-models';
+import { draftFor, rememberDraft, takePendingDraft } from './composer-drafts';
+import { attachmentBudget } from './attachment-budget';
 import {
   attachmentFromFile,
   attachmentFromFolder,
@@ -66,6 +67,7 @@ import {
   resolveLocalUserMessage,
 } from './local-messages';
 import { SegmentedControl, type SegmentedOption } from './SegmentedControl';
+import { sendFeedback } from './send-feedback';
 import {
   filterPalette,
   parseTrigger,
@@ -140,6 +142,7 @@ export function Composer({ thread }: ComposerProps) {
   const navigate = useNavigate();
   const connection = useAppStore((state) => state.connection);
   const settings = useAppStore((state) => state.settings);
+  const providers = useAppStore((state) => state.providers);
   const upsertThread = useAppStore((state) => state.upsertThread);
   const setMessages = useAppStore((state) => state.setMessages);
   const setEvents = useAppStore((state) => state.setEvents);
@@ -147,9 +150,11 @@ export function Composer({ thread }: ComposerProps) {
   const [input, setInput] = useState(() => takePendingDraft(thread?.id) ?? '');
   const [hint, setHint] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [queuedNotice, setQueuedNotice] = useState<{ text: string; since: string } | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [goalInput, setGoalInput] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [encoding, setEncoding] = useState(0);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -166,7 +171,19 @@ export function Composer({ thread }: ComposerProps) {
   const paletteRef = useRef<HTMLDivElement>(null);
 
   const councilMode = thread?.executionMode === 'council';
+  const providerModels = useProviderModels(thread?.providerId);
+  const imageBlind = useMemo(() => {
+    if (!attachments.some((attachment) => attachment.mimeType?.startsWith('image/'))) return false;
+    const row = providerModels.models.find((model) => model.modelId === thread?.modelId);
+    if (row?.capabilities !== null && row?.capabilities !== undefined) {
+      return !row.capabilities.vision;
+    }
+    const provider = providers.find((entry) => entry.id === thread?.providerId);
+    return provider?.config.capabilities?.vision !== true;
+  }, [attachments, providerModels.models, providers, thread?.modelId, thread?.providerId]);
   const council = useCouncilGoal(councilMode ? thread?.id : undefined);
+  // The files the server will drop, named while they are still removable chips.
+  const omittedAttachments = useMemo(() => attachmentBudget(attachments).omitted, [attachments]);
   const summary = useMemo(
     () => (council.status === null ? null : councilSummary(council.status)),
     [council.status],
@@ -195,6 +212,64 @@ export function Composer({ thread }: ComposerProps) {
     setActiveIndex(0);
   }, [triggerKind, triggerQuery]);
 
+  // The notice describes one thread's backlog, so a switch starts clean.
+  useEffect(() => {
+    setQueuedNotice(null);
+  }, [thread?.id]);
+
+  // One pane can move between threads without remounting the composer, so a switch
+  // parks the draft it held and starts the next thread with its own text and no files.
+  const previousThreadId = useRef(thread?.id);
+  useEffect(() => {
+    const previous = previousThreadId.current;
+    if (previous === thread?.id) return;
+    if (previous !== undefined) rememberDraft(previous, input);
+    previousThreadId.current = thread?.id;
+    setInput(draftFor(thread?.id) ?? takePendingDraft(thread?.id) ?? '');
+    setAttachments([]);
+    setHint(null);
+    setQueuedNotice(null);
+  }, [thread?.id, input]);
+
+  // A screenshot is often pasted while focus is on the timeline or a chip, not the
+  // textarea. Claim an image paste anywhere in the pane unless another editable field
+  // owns it, and keep the text half of a mixed clipboard instead of swallowing it.
+  const addFilesRef = useRef(addFiles);
+  addFilesRef.current = addFiles;
+  useEffect(() => {
+    function onPaste(event: Event): void {
+      if (!(event instanceof ClipboardEvent)) return;
+      const transfer = event.clipboardData;
+      const files = filesFromTransfer(transfer);
+      if (!files.some((file) => isImageFile(file))) return;
+      const target = event.target;
+      const root = rootRef.current;
+      const inside = target instanceof Node && root !== null && root.contains(target);
+      const editable =
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, [contenteditable="true"]') !== null;
+      if (!inside && editable) return;
+      const text = transfer?.getData('text/plain') ?? '';
+      if (text.length === 0) event.preventDefault();
+      if (!inside) {
+        textareaRef.current?.focus();
+        if (text.length > 0) setInput((current) => current + text);
+      }
+      void addFilesRef.current(files, 'clipboard');
+    }
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, []);
+
+  // The queued turn starts behind the live one, and the server stamps `updatedAt`
+  // when it flips the thread to running. A newer stamp proves the backlog drained;
+  // the send time is older, so the notice never clears on the live turn's own frames.
+  useEffect(() => {
+    if (queuedNotice === null) return;
+    if (thread?.status !== 'running') return;
+    if (thread.updatedAt > queuedNotice.since) setQueuedNotice(null);
+  }, [queuedNotice, thread?.status, thread?.updatedAt]);
+
   useEffect(() => {
     if (!paletteOpen) return;
     const element = paletteRef.current?.querySelector('[data-active="true"]');
@@ -210,7 +285,12 @@ export function Composer({ thread }: ComposerProps) {
 
   const running = thread?.status === 'running';
   const connected = connection === 'open';
-  const canSend = thread !== undefined && connected && !sending && input.trim().length > 0;
+  const canSend =
+    thread !== undefined &&
+    connected &&
+    !sending &&
+    encoding === 0 &&
+    (input.trim().length > 0 || attachments.length > 0);
   const canSendGoal =
     thread !== undefined && connected && !council.starting && goalInput.trim().length > 0;
 
@@ -240,7 +320,7 @@ export function Composer({ thread }: ComposerProps) {
   async function sendTurn(text: string): Promise<void> {
     if (!thread || !connected) return;
     const outgoing = text.trim();
-    if (outgoing.length === 0) return;
+    if (outgoing.length === 0 && attachments.length === 0) return;
     const sentAttachments = attachments;
     const messageId = nextLocalUserMessageId(thread.id);
     addLocalUserMessage({
@@ -256,14 +336,24 @@ export function Composer({ thread }: ComposerProps) {
     setInput('');
     setAttachments([]);
     setHint(null);
+    setQueuedNotice(null);
     try {
       const result = await rpc.request('threads.send', {
         id: thread.id,
         text: outgoing,
         ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
       });
-      resolveLocalUserMessage(messageId, result.turnId);
+      const feedback = sendFeedback(result);
+      resolveLocalUserMessage(messageId, result.turnId, feedback.queued);
+      // A send behind a live turn is accepted, not an error: say when it will run.
+      setQueuedNotice(
+        feedback.notice === null ? null : { text: feedback.notice, since: new Date().toISOString() },
+      );
     } catch (error) {
+      // The turn never started, so the draft and its images stay with the user instead
+      // of being lost with the failed echo.
+      setInput((current) => (current.length === 0 ? outgoing : current));
+      setAttachments((current) => (current.length === 0 ? sentAttachments : current));
       failLocalUserMessage(messageId);
       toast.error(error instanceof Error ? error.message : 'Could not send the message.');
     } finally {
@@ -322,10 +412,10 @@ export function Composer({ thread }: ComposerProps) {
   async function send(): Promise<void> {
     if (!thread || !canSend) return;
     const text = input.trim();
-    if (text.length === 0) return;
+    if (text.length === 0 && attachments.length === 0) return;
     // Any leading slash token goes through the server; an unknown name comes back
     // as a turn, so ordinary text that happens to start with a slash is not lost.
-    if (slashCommandName(text) !== null) {
+    if (text.length > 0 && slashCommandName(text) !== null) {
       await runSlash(text);
       return;
     }
@@ -425,24 +515,30 @@ export function Composer({ thread }: ComposerProps) {
   async function addFiles(files: readonly File[], source: 'clipboard' | 'drop' | 'picker'): Promise<void> {
     if (files.length === 0) return;
     const added: Attachment[] = [];
+    const images = files.filter(isImageFile).length;
+    if (images > 0) setEncoding((current) => current + images);
     let unnamed = 0;
-    for (const file of files) {
-      if (isImageFile(file)) {
-        const named =
-          file.name.length > 0
-            ? file
-            : new File([file], pastedImageName(imageTypeOf(file) ?? 'image/png', unnamed++), {
-                type: file.type,
-              });
-        const encoded = await encodeImageFile(named);
-        if (encoded.ok) added.push(imageAttachment(named, encoded.image));
-        else toast.error(encoded.reason);
-        continue;
+    try {
+      for (const file of files) {
+        if (isImageFile(file)) {
+          const named =
+            file.name.length > 0
+              ? file
+              : new File([file], pastedImageName(imageTypeOf(file) ?? 'image/png', unnamed++), {
+                  type: file.type,
+                });
+          const encoded = await encodeImageFile(named);
+          if (encoded.ok) added.push(imageAttachment(named, encoded.image));
+          else toast.error(encoded.reason);
+          continue;
+        }
+        const attachment = attachmentFromFile(file);
+        if (attachment) added.push(attachment);
+        else if (source === 'picker') toast.error(`${file.name} has no filesystem path in this build.`);
+        else toast.error(`${file.name} needs to be picked with the paperclip; a drop or paste only carries images.`);
       }
-      const attachment = attachmentFromFile(file);
-      if (attachment) added.push(attachment);
-      else if (source === 'picker') toast.error(`${file.name} has no filesystem path in this build.`);
-      else toast.error(`${file.name} needs to be picked with the paperclip; a drop or paste only carries images.`);
+    } finally {
+      if (images > 0) setEncoding((current) => Math.max(0, current - images));
     }
     if (added.length > 0) setAttachments((current) => [...current, ...added]);
   }
@@ -451,15 +547,6 @@ export function Composer({ thread }: ComposerProps) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
     void addFiles(files, 'picker');
-  }
-
-  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
-    const files = filesFromTransfer(event.clipboardData);
-    if (files.length === 0) return;
-    // Only an image paste is claimed; a text paste keeps the textarea's own behavior.
-    if (!files.some((file) => isImageFile(file))) return;
-    event.preventDefault();
-    void addFiles(files, 'clipboard');
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>): void {
@@ -632,12 +719,51 @@ export function Composer({ thread }: ComposerProps) {
                 </div>
               ) : null}
 
+              {encoding > 0 ? (
+                <p
+                  data-testid="composer-encoding"
+                  className="truncate px-1 pb-1 text-2xs text-muted-foreground"
+                >
+                  Preparing {encoding === 1 ? 'image' : `${String(encoding)} images`}...
+                </p>
+              ) : null}
+
+              {imageBlind ? (
+                <p
+                  data-testid="composer-image-blind"
+                  className="truncate px-1 pb-1 text-2xs text-warning-foreground"
+                >
+                  This model cannot view images. They are sent as file names, so describe the
+                  screenshot in your message.
+                </p>
+              ) : null}
+
+              {omittedAttachments.length > 0 ? (
+                <p
+                  data-testid="composer-attachment-budget"
+                  className="truncate px-1 pb-1 text-2xs text-warning-foreground"
+                  title={omittedAttachments.join(', ')}
+                >
+                  The model will not see {omittedAttachments.join(', ')}: this message is over the
+                  attachment budget. Remove them or send fewer images.
+                </p>
+              ) : null}
+
               {hint !== null && !paletteOpen ? (
                 <p
                   data-testid="command-hint"
                   className="truncate px-1 pb-1 font-mono text-2xs text-muted-foreground"
                 >
                   {hint}
+                </p>
+              ) : null}
+
+              {queuedNotice !== null ? (
+                <p
+                  data-testid="composer-queued-notice"
+                  className="truncate px-1 pb-1 text-2xs text-muted-foreground"
+                >
+                  {queuedNotice.text}
                 </p>
               ) : null}
 
@@ -655,7 +781,6 @@ export function Composer({ thread }: ComposerProps) {
                 disabled={!thread}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
                 className="max-h-[200px] w-full resize-none overflow-y-auto bg-transparent px-1 py-1 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-64"
               />
 

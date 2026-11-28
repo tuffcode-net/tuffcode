@@ -1,4 +1,4 @@
-import { InterfaceSizeSchema, ThemeSchema, type Settings } from '@tuffcode/contracts';
+import { InterfaceSizeSchema, type Settings } from '@tuffcode/contracts';
 import {
   Card,
   CardDescription,
@@ -13,15 +13,11 @@ import { SaveBar } from '../../components/settings/save-bar';
 import { SettingsRow } from '../../components/settings/settings-row';
 import { SettingsSectionHeader } from '../../components/settings/settings-section-header';
 import { SettingsSlider } from '../../components/settings/settings-slider';
+import { ThemePicker } from '../../components/settings/theme-picker';
 import { useSettingsDraft } from '../../components/settings/use-settings-draft';
 import { useAppStore } from '../../store/app-store';
 
 const KEYS = ['theme', 'interfaceSize', 'fontSize', 'sidebarWidth', 'panelAnimation'] as const;
-
-const THEME_OPTIONS: readonly SelectOption[] = [
-  { value: 'dark', label: 'Dark' },
-  { value: 'light', label: 'Light' },
-];
 
 const INTERFACE_SIZE_OPTIONS: readonly SelectOption[] = [
   { value: 'compact', label: 'Compact' },
@@ -31,7 +27,7 @@ const INTERFACE_SIZE_OPTIONS: readonly SelectOption[] = [
 
 export function AppearanceSection() {
   const settings = useAppStore((state) => state.settings);
-  const { draft, dirty, saving, error, update, reset, submit } = useSettingsDraft(KEYS);
+  const { draft, dirty, saving, error, update, reset, submit, save } = useSettingsDraft(KEYS);
 
   // Preview while the form is dirty; the stored values win again on unmount.
   useEffect(() => {
@@ -74,17 +70,23 @@ export function AppearanceSection() {
         </CardHeader>
 
         <div className="divide-y divide-border border-t border-border">
-          <SettingsRow label="Theme" htmlFor="appearance-theme">
-            <Select
-              id="appearance-theme"
-              options={THEME_OPTIONS}
-              value={draft?.theme ?? 'dark'}
-              onValueChange={(value) => {
-                const parsed = ThemeSchema.safeParse(value);
-                if (parsed.success) update({ theme: parsed.data });
+          <div className="flex flex-col gap-2 p-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">Theme</p>
+              <p className="text-2xs text-muted-foreground">
+                Click a palette to apply it immediately. Code blocks, diffs and the terminal
+                follow it.
+              </p>
+            </div>
+            <ThemePicker
+              value={draft?.theme}
+              disabled={!draft || saving}
+              onChange={(theme) => {
+                update({ theme });
+                void save({ theme });
               }}
             />
-          </SettingsRow>
+          </div>
 
           <SettingsRow
             label="Interface size"

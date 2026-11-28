@@ -5,7 +5,7 @@ import type {
   SubagentType,
   Thread,
 } from '@tuffcode/contracts';
-import { SubagentTypeSchema } from '@tuffcode/contracts';
+import { SubagentTypeSchema, councilAutonomy } from '@tuffcode/contracts';
 import type { Council } from '../council/types.js';
 import type { Repos } from '../db/repos/index.js';
 import { notFound } from '../errors.js';
@@ -198,7 +198,7 @@ export async function runCommand(
       const { goalId } = await deps.council.start({
         threadId: thread.id,
         goal: parsed.args,
-        autonomy: 'manual',
+        autonomy: councilAutonomy(deps.repos.settings.get()),
       });
       return { kind: 'text', text: `Council goal ${goalId} started.` };
     }
@@ -234,7 +234,7 @@ export async function runCommand(
         return { kind: 'error', message: 'Stop the running turn before clearing.' };
       }
       await deps.runner?.disposeThread(thread.id);
-      const result = clearThread(deps.repos, thread.id);
+      const result = await clearThread(deps.repos, thread.id);
       return {
         kind: 'ui',
         action: {
@@ -248,7 +248,7 @@ export async function runCommand(
         return { kind: 'error', message: 'Stop the running turn before compacting.' };
       }
       await deps.runner?.disposeThread(thread.id);
-      const result = compactThread(deps.repos, thread.id, parsed.args);
+      const result = await compactThread(deps.repos, thread.id, parsed.args);
       if (result.removed === 0) {
         return {
           kind: 'text',
