@@ -75,7 +75,10 @@ function writeWebRoot(): string {
   mkdirSync(join(root, 'assets'), { recursive: true });
   writeFileSync(
     join(root, 'index.html'),
-    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'" /></head><body><div id="root"></div></body></html>',
+    '<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'self\'" />' +
+      '<link rel="manifest" href="./manifest.webmanifest" />' +
+      '<script type="module" src="./assets/app.js"></script>' +
+      '</head><body><div id="root"></div></body></html>',
   );
   writeFileSync(join(root, 'assets', 'app.js'), 'console.log("tuffcode");');
   return root;
@@ -249,10 +252,18 @@ describe('http surface', () => {
     expect(html).toContain('<div id="root"></div>');
     expect(html).toContain('http-equiv="Content-Security-Policy"');
     expect(html).toContain(`ws://127.0.0.1:${harness.port}`);
+    // The desktop build writes relative URLs for file://; a served deep link must not
+    // resolve them against its own path or the module 404s and the page stays empty.
+    expect(html).toContain('src="/assets/app.js"');
+    expect(html).toContain('href="/manifest.webmanifest"');
+    expect(html).not.toContain('./assets/');
 
-    const route = await fetch(harness.url('/threads/thr_123'));
+    const route = await fetch(harness.url('/project/prj_1/thread/thr_123'));
     expect(route.status).toBe(200);
-    expect(await route.text()).toContain('<div id="root"></div>');
+    const routeHtml = await route.text();
+    expect(routeHtml).toContain('<div id="root"></div>');
+    expect(routeHtml).toContain('src="/assets/app.js"');
+    expect(routeHtml).not.toContain('./assets/');
   });
 
   it('refuses a path that escapes the web root', async () => {

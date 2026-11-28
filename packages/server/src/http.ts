@@ -69,6 +69,11 @@ const PAIRING_CLAIM_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
 const INDEX_FILE = 'index.html';
 const META_CSP = /<meta\b[^>]*http-equiv=["']Content-Security-Policy["'][^>]*>/i;
+// The desktop build writes the shell with `./` asset URLs so Electron can load it from
+// `file://`. A served page resolves those against the requested path, so a deep link
+// such as `/project/p/thread/t` would ask for `/project/p/thread/assets/app.js` and get
+// a 404 with an empty body. Every served page is rooted at `/`, so they are made absolute.
+const RELATIVE_SHELL_URL = /\b(src|href)="\.\//g;
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
@@ -395,9 +400,10 @@ function toView(session: RemoteSessionRecord, connected: ReadonlySet<string>): R
 }
 
 function renderIndexHtml(html: string, csp: string): string {
+  const rooted = html.replace(RELATIVE_SHELL_URL, '$1="/');
   const tag = `<meta http-equiv="Content-Security-Policy" content="${csp.replaceAll('"', '&quot;')}" />`;
-  if (META_CSP.test(html)) return html.replace(META_CSP, tag);
-  return html.replace('</head>', `  ${tag}\n  </head>`);
+  if (META_CSP.test(rooted)) return rooted.replace(META_CSP, tag);
+  return rooted.replace('</head>', `  ${tag}\n  </head>`);
 }
 
 interface StaticFile {
