@@ -1,8 +1,9 @@
 /**
  * Thread status to color mapping.
  *
- * Hues are fixed by the design system: running sky, needs-approval amber,
- * ready-to-review emerald, failed red, plan-ready violet.
+ * Every tone is a theme token, so a palette switch repaints the dots and chips.
+ * Plan has its own token: it must stay readable as text and stay clearly apart from
+ * the running blue in every palette.
  */
 
 export const THREAD_STATUSES = [
@@ -39,7 +40,7 @@ export const STATUS_DOT_CLASS: Record<StatusTone, string> = {
   warning: 'bg-warning',
   success: 'bg-success',
   error: 'bg-error',
-  plan: 'bg-primary',
+  plan: 'bg-plan-foreground',
 };
 
 export const STATUS_TEXT_CLASS: Record<StatusTone, string> = {
@@ -48,7 +49,7 @@ export const STATUS_TEXT_CLASS: Record<StatusTone, string> = {
   warning: 'text-warning-foreground',
   success: 'text-success-foreground',
   error: 'text-error-foreground',
-  plan: 'text-primary',
+  plan: 'text-plan-foreground',
 };
 
 export const STATUS_LABEL: Record<StatusKey, string> = {

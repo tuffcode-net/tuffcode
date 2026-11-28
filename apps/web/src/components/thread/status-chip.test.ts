@@ -34,6 +34,7 @@ describe('statusChip', () => {
     expect(statusChip('merged').tone).toBe('success');
     expect(statusChip('closed').tone).toBe('neutral');
     expect(statusChip('plan-ready')).toMatchObject({ label: 'Plan ready', tone: 'plan' });
+    expect(statusChip('plan-ready').className).toContain('text-plan-foreground');
   });
 
   it('gives every chip a 10 percent tinted background', () => {

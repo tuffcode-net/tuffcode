@@ -26,7 +26,7 @@ const STATUS_CHIP_CLASS: Record<StatusChipTone, string> = {
   warning: 'bg-warning/10 text-warning-foreground',
   success: 'bg-success/10 text-success-foreground',
   error: 'bg-error/10 text-error-foreground',
-  plan: 'bg-primary/10 text-primary',
+  plan: 'bg-plan-foreground/10 text-plan-foreground',
 };
 
 /** Maps a thread status onto its tinted chip label and 10 percent background. */

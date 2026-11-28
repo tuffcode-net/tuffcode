@@ -26,7 +26,10 @@ describe('status mapping', () => {
     expect(STATUS_DOT_CLASS[STATUS_TONE['needs-approval']]).toBe('bg-warning');
     expect(STATUS_DOT_CLASS[STATUS_TONE['ready-to-review']]).toBe('bg-success');
     expect(STATUS_DOT_CLASS[STATUS_TONE.failed]).toBe('bg-error');
-    expect(STATUS_DOT_CLASS[STATUS_TONE['plan-ready']]).toBe('bg-primary');
+    // Plan has a token of its own: it must stay apart from the running blue and stay
+    // readable as text in every palette.
+    expect(STATUS_DOT_CLASS[STATUS_TONE['plan-ready']]).toBe('bg-plan-foreground');
+    expect(STATUS_TEXT_CLASS[STATUS_TONE['plan-ready']]).toBe('text-plan-foreground');
   });
 
   it('maps terminal statuses onto the neutral and success tones', () => {

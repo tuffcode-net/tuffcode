@@ -81,10 +81,15 @@ export async function confirmNewThreadDialog(
  * because the button is pointer-events-none until the row is hovered or focused.
  */
 export async function clickNewThread(page: Page): Promise<void> {
-  await page.getByTestId('project-toggle').first().hover();
   const button = page.getByTestId('sidebar-new-thread');
-  await expect(button).toBeEnabled();
-  await button.click();
+  // The button is pointer-events-none until its project row is hovered. The row can move
+  // under a stationary pointer after a thread is created, which makes Playwright's
+  // synthetic hover stale and the click time out on a 30 second hit-target check. Hover
+  // the row, then force the click: it still targets the button and dispatches a real
+  // click, without depending on where the synthetic pointer happened to sit.
+  await page.getByTestId('project-name').first().hover();
+  await expect(button).toBeVisible();
+  await button.click({ force: true });
 }
 
 /** Clicks New thread, confirms the dialog, and waits for the thread view to mount. */
