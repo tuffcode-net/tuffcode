@@ -11,16 +11,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Attachment, TurnAttachment } from '@tuffcode/contracts';
+import { MAX_ATTACHMENT_BASE64_CHARS } from '@tuffcode/contracts';
 import { attachmentsDir } from '@tuffcode/shared';
 
 /** A stored id is a lowercase SHA-256 hex digest plus the extension for its format. */
 const STORED_ID = /^[a-f0-9]{64}\.[a-z0-9]{1,5}$/;
-
-/** Base64 characters one attachment may carry; the renderer caps at 5 MB decoded. */
-export const MAX_ATTACHMENT_BASE64_CHARS = 8 * 1024 * 1024;
-
-/** Base64 characters all attachments in one send may carry together. */
-export const MAX_SEND_BASE64_CHARS = 32 * 1024 * 1024;
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   'image/png': 'png',
