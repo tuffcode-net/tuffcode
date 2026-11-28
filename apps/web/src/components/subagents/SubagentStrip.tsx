@@ -57,6 +57,7 @@ export function SubagentStrip({ threadId, onOpen }: SubagentStripProps) {
                 type="button"
                 data-testid="subagent-strip-finished"
                 data-child-id={chip.childId}
+                aria-label={`Open the last finished subagent, ${chip.label}`}
                 onClick={() => onOpen(chip.childId)}
                 className={MORE_CHIP_CLASS}
               >

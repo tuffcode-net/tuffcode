@@ -14,6 +14,7 @@ import { buildCustomInstructions, buildPersonalSection, type PersonalProfile, ty
 export const CUSTOM_INSTRUCTIONS_HEADING = '## Custom instructions';
 export const ABOUT_USER_HEADING = '## About the user';
 export const PROJECT_RULES_HEADING = '## Project rules';
+export const REVIEW_COMMENTS_HEADING = '## Review comments';
 
 const BRAIN_NOTES_HEADING = '## Brain notes';
 const RETRIEVED_MEMORY_HEADING = '## Retrieved memory';
@@ -26,6 +27,7 @@ export type PromptSectionName =
   | 'about-user'
   | 'custom-instructions'
   | 'project-rules'
+  | 'review-comments'
   | 'skills'
   | 'available-skills'
   | 'brain-always'
@@ -44,6 +46,8 @@ export interface PromptAssemblyInput {
   customInstructions?: string;
   /** Rendered project rule blocks from the repository, already budgeted. */
   projectRules?: string;
+  /** Unresolved inline review comments from the Changes panel. */
+  reviewComments?: string;
   /** Your Tuffcode profile; empty fields are left out. */
   profile?: PersonalProfile;
   responseStyle?: ResponseStyleName;
@@ -105,6 +109,15 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
       ),
     );
   }
+  const reviewComments = input.reviewComments?.trim() ?? '';
+  if (reviewComments.length > 0) {
+    sections.push(
+      section(
+        'review-comments',
+        `${REVIEW_COMMENTS_HEADING}\nUnresolved inline comments from the Changes panel. Address each one this turn.\n${reviewComments}`,
+      ),
+    );
+  }
   if (skills.length > 0) {
     sections.push(section('skills', `${SKILLS_HEADING}\n${skills}`));
   }
@@ -130,9 +143,17 @@ export function assemblePrompt(input: PromptAssemblyInput): AssembledPrompt {
   // Project rules with globs, skill mentions, the available-skill list and everything
   // from the brain on are message-dependent, so they must sit after the cache breakpoint.
   const splitAt = systemSections.findIndex((entry) =>
-    ['project-rules', 'skills', 'available-skills', 'brain-always', 'retrieved-memory', 'turn-context'].includes(
-      entry.name,
-    ),
+    [
+      'project-rules',
+      // Review comments change whenever the user comments, so they belong after the
+      // breakpoint even when a project has no rule files at all.
+      'review-comments',
+      'skills',
+      'available-skills',
+      'brain-always',
+      'retrieved-memory',
+      'turn-context',
+    ].includes(entry.name),
   );
   const staticSections = splitAt === -1 ? systemSections : systemSections.slice(0, splitAt);
   const dynamicSections = splitAt === -1 ? [] : systemSections.slice(splitAt);

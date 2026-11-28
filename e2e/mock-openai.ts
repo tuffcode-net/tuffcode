@@ -22,7 +22,10 @@ export const MOCK_TIMELINE_FILE = 'timeline-added.txt';
 export const MOCK_TIMELINE_FILE_CONTENT = 'alpha\nbeta';
 export const MOCK_SUBAGENT_TASK = 'map the project structure';
 export const MOCK_SUBAGENT_FINAL = 'Spawned an explorer to map the project.';
-export const MOCK_SUBAGENT_TWO_TASK = 'review the project';
+/** The held marker lets a spec read the strip while this child is still running. */
+export const MOCK_SUBAGENT_HOLD = 'subagent-hold';
+export const MOCK_SUBAGENT_TWO_TASK = 'review the project ' + MOCK_SUBAGENT_HOLD;
+const MOCK_SUBAGENT_HOLD_MS = 4000;
 /** The planner answer: two tasks, disjoint files, one dependency edge. */
 export const MOCK_COUNCIL_PLAN = {
   tasks: [
@@ -268,6 +271,15 @@ async function handleChat(
     return;
   }
   const last = messages.at(-1);
+
+  // A held child turn stays running long enough for a spec to read the strip while
+  // the child is live. Only a task that carries the marker reaches this branch.
+  if (prompt.includes(MOCK_SUBAGENT_HOLD)) {
+    await delay(MOCK_SUBAGENT_HOLD_MS);
+    await streamText(response, MOCK_TEXT);
+    response.end();
+    return;
+  }
 
   if (prompt.includes('interleave-timeline')) {
     const toolResults = messages.filter((message) => message.role === 'tool').length;
