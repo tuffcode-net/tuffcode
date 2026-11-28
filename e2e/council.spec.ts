@@ -56,6 +56,10 @@ test('runs a council goal with the configured models and reports the failure', a
   await goalInput.fill('Document the answer constant and re-export it');
   await page.getByTestId('council-send').click();
 
+  // The composer keeps a Stop control while the goal is moving, so a collapsed board
+  // cannot strand the user with no way to cancel.
+  await expect(page.getByTestId('council-stop')).toBeVisible({ timeout: 30_000 });
+
   const board = page.getByTestId('council-board');
   await expect(board).toHaveAttribute('data-empty', 'false', { timeout: 60_000 });
 
@@ -91,4 +95,69 @@ test('runs a council goal with the configured models and reports the failure', a
   await expect(failure).toBeVisible({ timeout: 120_000 });
   await expect(failure).toContainText('worker produced no changes');
   await expect(page.getByTestId('council-thread-board')).toContainText('Failed');
+  // A terminal goal removes the Stop control.
+  await expect(page.getByTestId('council-stop')).toHaveCount(0);
+});
+
+/**
+ * The composer Stop must call `council.cancel` and the goal must reach a terminal
+ * state, not merely hide the control. This is a separate test because the one above
+ * ends by asserting the goal failed on its own.
+ */
+test('the composer Stop cancels the running goal', async ({ session, workspace, mock, rpc }) => {
+  const { page } = session;
+
+  await addProjectThroughUi(session, workspace);
+  await addMockProvider(page, mock);
+  const providerId = await seedDefaultModel(rpc);
+  await createThreadThroughSidebar(page);
+  await setPermissionMode(page, 'Full auto');
+  await closeDock(page);
+
+  await rpc.request('settings.set', {
+    patch: {
+      subagentModels: {
+        planner: { providerId, model: 'planner-mock' },
+        worker: { providerId, model: 'worker-mock' },
+      },
+    },
+  });
+
+  const modeSwitch = page.getByTestId('thread-mode-switch');
+  await modeSwitch.getByRole('radio', { name: 'Council' }).click();
+  await expect(modeSwitch.getByRole('radio', { name: 'Council' })).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+
+  const goalInput = page.getByTestId('council-goal-input');
+  await expect(goalInput).toBeVisible();
+  await goalInput.fill('Document the answer constant and re-export it');
+  await page.getByTestId('council-send').click();
+
+  const threads = (await rpc.request('threads.list', {})) as ThreadSummary[];
+  const threadId = threads[0]?.id ?? '';
+  expect(threadId).not.toBe('');
+
+  const stop = page.getByTestId('council-stop');
+  await expect(stop).toBeVisible({ timeout: 30_000 });
+  await stop.click();
+
+  await expect
+    .poll(
+      async () => {
+        const latest = (await rpc.request('council.latest', { threadId })) as
+          | { goal: { state: string } }
+          | null;
+        return latest?.goal.state ?? 'none';
+      },
+      { timeout: 60_000 },
+    )
+    .toBe('cancelled');
+
+  await expect(page.getByTestId('council-stop')).toHaveCount(0);
+  await expect(page.getByTestId('council-status-strip')).toHaveAttribute(
+    'data-state',
+    'cancelled',
+  );
 });

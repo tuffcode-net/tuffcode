@@ -1,6 +1,6 @@
 import type { RpcResult } from '@tuffcode/contracts';
 import { councilAutonomy } from '@tuffcode/contracts';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRpc } from '../../rpc/rpc-context';
 import { useAppStore } from '../../store/app-store';
 import {
@@ -8,6 +8,7 @@ import {
   isGoalTerminal,
   isPermanentCouncilFailure,
 } from '../inspector/council-model';
+import { isCancelPending, stillTracksGoal } from './council-goal';
 import { goalIdFromLatest } from './council-goal-source';
 
 export type CouncilStatus = RpcResult<'council.status'>;
@@ -20,8 +21,12 @@ export interface UseCouncilGoalResult {
   status: CouncilStatus | null;
   starting: boolean;
   error: string | null;
+  /** True while a goal is still moving, so the composer can offer Stop. */
+  running: boolean;
+  cancelling: boolean;
   /** Resolves true when the server accepted the goal. */
   start: (goal: string) => Promise<boolean>;
+  cancel: () => Promise<void>;
 }
 
 /**
@@ -37,8 +42,15 @@ export function useCouncilGoal(threadId: string | undefined): UseCouncilGoalResu
   const [goalId, setGoalId] = useState<string | null>(null);
   const [status, setStatus] = useState<CouncilStatus | null>(null);
   const [starting, setStarting] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pollingStopped, setPollingStopped] = useState(false);
+  /** The goal the composer currently follows; a late cancel load must not write another. */
+  const trackedGoalId = useRef<string | null>(null);
+  // Written in an effect so a render React discards cannot leave its goal behind.
+  useEffect(() => {
+    trackedGoalId.current = goalId;
+  }, [goalId]);
 
   // Reattach to the thread's newest goal after a reload instead of trusting
   // module memory that dies with the window.
@@ -46,6 +58,7 @@ export function useCouncilGoal(threadId: string | undefined): UseCouncilGoalResu
     setGoalId(null);
     setStatus(null);
     setError(null);
+    setCancelRequested(false);
     setPollingStopped(false);
     if (threadId === undefined) return;
     let cancelled = false;
@@ -108,6 +121,7 @@ export function useCouncilGoal(threadId: string | undefined): UseCouncilGoalResu
           autonomy,
         });
         setStatus(null);
+        setCancelRequested(false);
         setPollingStopped(false);
         setGoalId(started.goalId);
         return true;
@@ -121,5 +135,23 @@ export function useCouncilGoal(threadId: string | undefined): UseCouncilGoalResu
     [autonomy, rpc, starting, threadId],
   );
 
-  return { goalId, status, starting, error, start };
+  const cancel = useCallback(async (): Promise<void> => {
+    if (goalId === null || cancelRequested) return;
+    const target = goalId;
+    setCancelRequested(true);
+    try {
+      await rpc.request('council.cancel', { goalId: target });
+      // The server can take seconds to tear a goal down; the user may have started
+      // another goal meanwhile, and this load would overwrite its status.
+      if (stillTracksGoal(trackedGoalId.current, target)) await load();
+    } catch (cause) {
+      setCancelRequested(false);
+      setError(councilErrorMessage(cause));
+    }
+  }, [cancelRequested, goalId, load, rpc]);
+
+  const running = goalState !== undefined && !isGoalTerminal(goalState);
+  // One lock for the whole teardown: Stop stays disabled until the goal is terminal.
+  const cancelling = isCancelPending(cancelRequested, goalState, pollingStopped);
+  return { goalId, status, starting, error, running, cancelling, start, cancel };
 }

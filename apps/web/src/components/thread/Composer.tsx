@@ -685,14 +685,31 @@ export function Composer({ thread }: ComposerProps) {
           )}
 
           {councilMode ? (
-            <CouncilGoal
-              value={goalInput}
-              onChange={setGoalInput}
-              onSend={() => void sendGoal()}
-              starting={council.starting}
-              canSend={canSendGoal}
-              disabled={!thread}
-            />
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <CouncilGoal
+                  value={goalInput}
+                  onChange={setGoalInput}
+                  onSend={() => void sendGoal()}
+                  starting={council.starting}
+                  canSend={canSendGoal}
+                  disabled={!thread}
+                />
+              </div>
+              {council.running ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  data-testid="council-stop"
+                  disabled={council.cancelling}
+                  onClick={() => void council.cancel()}
+                >
+                  <Square aria-hidden="true" strokeWidth={1.75} className="size-3.5" />
+                  Stop
+                </Button>
+              ) : null}
+            </div>
           ) : (
             <>
               {attachments.length > 0 ? (
