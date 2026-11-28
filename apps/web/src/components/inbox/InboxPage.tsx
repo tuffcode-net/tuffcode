@@ -134,7 +134,7 @@ function InboxRow({ thread }: { thread: DashboardThread }) {
       <Link
         to="/project/$projectId/thread/$threadId"
         params={{ projectId: thread.projectId, threadId: thread.threadId }}
-        className="flex min-w-0 flex-1 flex-col gap-1 rounded-md px-3 py-2 focus-visible:outline-none"
+        className="flex min-w-0 flex-1 flex-col gap-1 rounded-md px-3 py-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none"
       >
         <div className="flex min-w-0 items-center gap-2">
           <span

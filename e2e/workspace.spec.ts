@@ -3,6 +3,7 @@ import { expect, test } from './fixtures';
 import {
   addMockProvider,
   addProjectThroughUi,
+  clickNewThread,
   confirmNewThreadDialog,
   openDock,
   seedDefaultModel,
@@ -78,7 +79,7 @@ test('the worktree option creates an isolated branch outside the project', async
   await addMockProvider(page, mock);
   await seedDefaultModel(rpc);
 
-  await page.getByTestId('sidebar-new-thread').click();
+  await clickNewThread(page);
   const dialog = page.getByTestId('new-thread-dialog');
   await expect(dialog).toBeVisible();
   await dialog.getByTestId('workspace-worktree').click();

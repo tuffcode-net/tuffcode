@@ -4,6 +4,7 @@ import { expect, test } from './fixtures';
 import {
   addMockProvider,
   addProjectThroughUi,
+  clickNewThread,
   closeDock,
   confirmNewThreadDialog,
   createThreadThroughSidebar,
@@ -37,7 +38,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   const selectedRow = page.locator('[data-testid="thread-row"][aria-current="page"]');
   const firstThreadId = await selectedRow.getAttribute('data-thread-id');
   // A second thread gives the sidebar a row to drag into a tile.
-  await page.getByTestId('sidebar-new-thread').click();
+  await clickNewThread(page);
   await confirmNewThreadDialog(page);
   await expect(page.getByTestId('thread-title')).toBeVisible();
   await expect(page.getByTestId('thread-row')).toHaveCount(2);
