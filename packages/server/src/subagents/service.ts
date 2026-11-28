@@ -1452,6 +1452,18 @@ export function createSubagents(deps: SubagentDeps): Subagents {
       finish(childId, 'cancelled', 'cancelled by the parent');
     },
 
+    async cancelAll(threadId) {
+      for (const record of repos.subagents.listByThread(threadId)) {
+        if (record.status !== 'queued' && record.status !== 'running') continue;
+        await api.cancel(record.childId).catch((error: unknown) => {
+          logger.warn('child not cancelled with its parent thread', {
+            childId: record.childId,
+            reason: errorMessage(error),
+          });
+        });
+      }
+    },
+
     list(threadId) {
       return repos.subagents.listByThread(threadId).map(toSubagentView);
     },
