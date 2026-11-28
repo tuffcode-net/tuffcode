@@ -44,6 +44,44 @@ describe('allowedToolSchemas', () => {
   });
 });
 
+describe('allowedToolSchemas with a tool profile', () => {
+  it('offers only the core tools the profile names', () => {
+    const profile = { offer: ['read', 'grep'], bash: 'none' as const };
+    expect(allowedToolSchemas(undefined, {}, profile).map((tool) => tool.name)).toEqual([
+      'read',
+      'grep',
+    ]);
+  });
+
+  it('drops a server tool the profile does not offer', () => {
+    const profile = { offer: ['read'], bash: 'none' as const };
+    expect(
+      allowedToolSchemas(['read'], { subagent: true, extra: true }, profile).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(['read']);
+  });
+
+  it('matches an extra tool offered by one of its actions', () => {
+    const profile = { offer: ['read', 'subagent:spawn', 'memory:search'], bash: 'none' as const };
+    expect(
+      allowedToolSchemas(['read'], { subagent: true, extra: true }, profile).map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(['read', 'subagent', 'memory']);
+  });
+
+  it('spells the profile limits out without mutating the shared schema', () => {
+    const profile = { offer: ['bash', 'write'], bash: 'read-only' as const, writeGlobs: ['src/**'] };
+    const offered = allowedToolSchemas(undefined, {}, profile);
+    expect(offered.map((tool) => tool.name)).toEqual(['bash', 'write']);
+    const write = offered.find((tool) => tool.name === 'write');
+    expect(write?.description).toContain('src/**');
+    const plain = allowedToolSchemas().find((tool) => tool.name === 'write');
+    expect(plain?.description).not.toContain('src/**');
+  });
+});
+
 describe('isParallelSafeTool', () => {
   it('accepts the file tools that only read', () => {
     expect(isParallelSafeTool('read', { path: 'a.ts' })).toBe(true);

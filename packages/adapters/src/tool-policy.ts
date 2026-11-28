@@ -2,6 +2,7 @@ import type {
   AdapterDeps,
   ExtraToolName,
   PermissionMode,
+  ToolProfile,
   TurnContext,
   TurnToolOptions,
 } from '@tuffcode/contracts';
@@ -85,28 +86,69 @@ export function isServerToolOffered(name: string, options: TurnToolOptions): boo
 
 export { NO_SERVER_TOOLS };
 
+/** Whether a profile offers a tool at all: by bare name, or by one of its named actions. */
+export function profileOffers(profile: ToolProfile, name: string): boolean {
+  return profile.offer.some((entry) => entry === name || entry.startsWith(name + ':'));
+}
+
+/** The schema with the profile's limits spelled out; never mutates the shared TOOL_SCHEMAS. */
+function shapeForProfile(
+  schema: HarnessToolSchema,
+  profile: ToolProfile | undefined,
+): HarnessToolSchema {
+  if (profile === undefined) return schema;
+  if (schema.name === 'bash' && profile.bash === 'read-only') {
+    return {
+      ...schema,
+      description:
+        schema.description + ' Read-only commands only; anything that writes is refused.',
+    };
+  }
+  if (schema.name === 'write' || schema.name === 'edit') {
+    const globs = profile.writeGlobs ?? [];
+    if (globs.length === 0) return schema;
+    return {
+      ...schema,
+      description:
+        schema.description + ' You may write only these paths: ' + globs.join(', ') + '.',
+    };
+  }
+  return schema;
+}
+
 /**
  * The harness tools a turn may offer. An unset allowlist means every file tool, which
  * keeps a context built without settings on the pre-settings behaviour. The subagent
  * and extra tools are separate from the allowlist on purpose: `enabledTools` lists file
  * tools, and delegation or server tools must not disappear because the user narrowed
- * that list.
+ * that list. A profile narrows what is left: a tool it does not offer is never shown,
+ * so a child never spends a turn on a call that would be refused.
  */
 export function allowedToolSchemas(
   allowlist?: readonly string[],
   options: ToolListOptions = {},
+  profile?: ToolProfile,
 ): readonly HarnessToolSchema[] {
-  const tools: HarnessToolSchema[] =
+  const listed: HarnessToolSchema[] =
     allowlist === undefined
       ? [...TOOL_SCHEMAS]
       : TOOL_SCHEMAS.filter((schema) => allowlist.includes(schema.name));
+  const tools =
+    profile === undefined
+      ? listed
+      : listed.filter((schema) => profileOffers(profile, schema.name));
   // Callers that only say `extra` mean the original three tools, mcp included.
   const offered = { ...NO_SERVER_TOOLS, ...options, mcp: options.mcp ?? options.extra === true };
-  if (offered.subagent) tools.push(SUBAGENT_TOOL);
-  for (const schema of EXTRA_TOOL_SCHEMAS) {
-    if (isServerToolOffered(schema.name, offered)) tools.push(schema);
+  const shaped = tools.map((schema) => shapeForProfile(schema, profile));
+  if (offered.subagent && (profile === undefined || profileOffers(profile, SUBAGENT_TOOL_NAME))) {
+    shaped.push(SUBAGENT_TOOL);
   }
-  return tools;
+  for (const schema of EXTRA_TOOL_SCHEMAS) {
+    if (!isServerToolOffered(schema.name, offered)) continue;
+    if (profile !== undefined && !profileOffers(profile, schema.name)) continue;
+    shaped.push(schema);
+  }
+  return shaped;
 }
 
 /** True when settings disabled this tool, so a call must be answered with an error. */

@@ -10,6 +10,21 @@ export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 export const PermissionModeSchema = z.enum(['read-only', 'ask', 'accept-edits', 'full-auto']);
 export type PermissionMode = z.infer<typeof PermissionModeSchema>;
 
+/**
+ * What one agent may be offered and may do with it. A subagent child carries the
+ * profile of its type, so the request omits what it cannot use instead of denying
+ * the call after the model already tried it.
+ */
+export const ToolProfileSchema = z.object({
+  /** Tool names this profile offers. An entry is `name` or `name:action` for extra tools. */
+  offer: z.array(z.string()).min(1),
+  /** Globs (cwd-relative, forward slashes) that write and edit may touch. Absent means no file writing. */
+  writeGlobs: z.array(z.string()).optional(),
+  /** read-only: only isReadOnlyCommand passes. worktree: anything except DESTRUCTIVE_COMMANDS. none: bash is not offered. */
+  bash: z.enum(['read-only', 'worktree', 'none']),
+});
+export type ToolProfile = z.infer<typeof ToolProfileSchema>;
+
 export const ThreadStatusSchema = z.enum([
   'idle',
   'running',
