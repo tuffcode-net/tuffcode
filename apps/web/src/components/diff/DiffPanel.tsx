@@ -1,16 +1,10 @@
 import type { Checkpoint, DiffFile, ReviewComment, ReviewCommentSide } from '@tuffcode/contracts';
+import { Button, EmptyState, IconButton, Select, Spinner, Textarea, cn } from '@tuffcode/ui';
 import {
-  Button,
   DiffViewer,
-  EmptyState,
-  IconButton,
-  Select,
-  Spinner,
-  Textarea,
-  cn,
   type DiffLineComment,
   type DiffLineContext,
-} from '@tuffcode/ui';
+} from '@tuffcode/ui/diff';
 import {
   FileDiff,
   MessageSquarePlus,

@@ -8,6 +8,7 @@
     "build": "pnpm --filter @tuffcode/desktop build",
     "build:server": "node scripts/build-server.mjs",
     "smoke:server": "node scripts/smoke-server.mjs",
+    "bench:memory": "node scripts/bench-memory.mjs",
     "build:win": "pnpm --filter @tuffcode/desktop run build:win",
     "typecheck": "pnpm -r --if-present run typecheck && tsc --noEmit -p e2e/tsconfig.json",
     "lint": "oxlint .",

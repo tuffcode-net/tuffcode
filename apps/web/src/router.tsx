@@ -9,11 +9,17 @@ import { EmptyState } from '@tuffcode/ui';
 import { useEffect } from 'react';
 import { AppShell } from './components/AppShell';
 import { EmptyWorkspace } from './components/EmptyWorkspace';
-import { InboxPage } from './components/inbox/InboxPage';
 import { PaneWorkspace } from './components/panes/PaneWorkspace';
 import { resolveRootView } from './components/shell-layout';
-import { PluginsPage } from './routes/plugins/plugins-page';
-import { SettingsPage } from './routes/settings/settings-page';
+import { lazyRouteComponent } from '@tanstack/react-router';
+
+// Routes the user is not on do not belong in the first chunk.
+const InboxPage = lazyRouteComponent(() => import('./components/inbox/InboxPage'), 'InboxPage');
+const PluginsPage = lazyRouteComponent(() => import('./routes/plugins/plugins-page'), 'PluginsPage');
+const SettingsPage = lazyRouteComponent(
+  () => import('./routes/settings/settings-page'),
+  'SettingsPage',
+);
 import { useAppStore } from './store/app-store';
 
 function WorkspaceIndex() {
