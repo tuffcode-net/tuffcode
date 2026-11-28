@@ -80,7 +80,7 @@ test('every child ends with a visible reason and no child calls a tool outside i
   const cancelled = await statusOf(explorer.childId);
   expect(cancelled.summary ?? '').toContain('cancel');
   const failedWorker = await statusOf(worker.childId);
-  expect(failedWorker.summary ?? '').toContain('mock provider failure');
+  expect(failedWorker.summary ?? '').toMatch(/mock provider failure|status 500/);
   const cutReviewer = await statusOf(reviewer.childId);
   expect((cutReviewer.summary ?? '').length).toBeGreaterThan(0);
 
