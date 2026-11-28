@@ -310,7 +310,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
 
   return (
     <section
-      aria-label="Diff"
+      aria-label="Changes"
       data-testid="diff-panel"
       className="flex h-full min-h-0 flex-col bg-background text-foreground"
     >

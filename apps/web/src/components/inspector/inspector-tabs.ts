@@ -20,7 +20,7 @@ export type InspectorTab = (typeof INSPECTOR_TABS)[number];
 export const INSPECTOR_TAB_LABEL: Record<InspectorTab, string> = {
   activity: 'Activity',
   files: 'Files',
-  diff: 'Diff',
+  diff: 'Changes',
   terminal: 'Terminal',
   browser: 'Browser',
   brain: 'Brain',
