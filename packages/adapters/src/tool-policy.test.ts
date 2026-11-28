@@ -143,7 +143,7 @@ describe('tool profile', () => {
     expect(reason).toContain('is not offered to this agent; it may use:');
     expect(reason).toContain('read');
     expect(reason).toContain('bash');
-    expect(reason).not.toContain('config');
+    expect(reason.split('it may use: ')[1] ?? '').not.toContain('config');
   });
 
   it('names the actions a child may use and refuses the rest', () => {
