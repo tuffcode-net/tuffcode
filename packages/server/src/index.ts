@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isShutdownMessage } from './ipc.js';
+import { installProcessGuards } from './process-guards.js';
 import { startServer } from './server.js';
 import type { SecretPort } from './secrets/bridge.js';
 
@@ -56,6 +57,7 @@ function isEntryPoint(): boolean {
 }
 
 async function main(): Promise<void> {
+  installProcessGuards();
   const parentPort = getParentPort();
   const running = await startServer(parentPort === undefined ? {} : { parentPort });
   // Electron's MessagePort has no targetOrigin; the lint rule targets window.postMessage.
