@@ -3,9 +3,10 @@ import { IconButton, cn } from '@tuffcode/ui';
 import { Folder, FolderOpen, Plus, Trash2 } from 'lucide-react';
 
 const revealOnHover = cn(
-  'opacity-0 transition-opacity duration-150',
-  'group-hover/project:opacity-100',
-  'focus-visible:opacity-100',
+  'pointer-events-none opacity-0 transition-opacity duration-150',
+  'group-hover/project:pointer-events-auto group-hover/project:opacity-100',
+  'focus-visible:pointer-events-auto focus-visible:opacity-100',
+  '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
 );
 
 const compactIcon = 'size-6 [&_svg]:size-3';

@@ -21,12 +21,15 @@ describe('status mapping', () => {
     }
   });
 
-  it('uses the spec hues for thread statuses', () => {
-    expect(STATUS_DOT_CLASS[STATUS_TONE.running]).toContain('sky');
-    expect(STATUS_DOT_CLASS[STATUS_TONE['needs-approval']]).toContain('amber');
-    expect(STATUS_DOT_CLASS[STATUS_TONE['ready-to-review']]).toContain('emerald');
-    expect(STATUS_DOT_CLASS[STATUS_TONE.failed]).toContain('red');
-    expect(STATUS_DOT_CLASS[STATUS_TONE['plan-ready']]).toContain('violet');
+  it('uses the semantic theme tokens for thread statuses', () => {
+    expect(STATUS_DOT_CLASS[STATUS_TONE.running]).toBe('bg-info');
+    expect(STATUS_DOT_CLASS[STATUS_TONE['needs-approval']]).toBe('bg-warning');
+    expect(STATUS_DOT_CLASS[STATUS_TONE['ready-to-review']]).toBe('bg-success');
+    expect(STATUS_DOT_CLASS[STATUS_TONE.failed]).toBe('bg-error');
+    // Plan has a token of its own: it must stay apart from the running blue and stay
+    // readable as text in every palette.
+    expect(STATUS_DOT_CLASS[STATUS_TONE['plan-ready']]).toBe('bg-plan-foreground');
+    expect(STATUS_TEXT_CLASS[STATUS_TONE['plan-ready']]).toBe('text-plan-foreground');
   });
 
   it('maps terminal statuses onto the neutral and success tones', () => {

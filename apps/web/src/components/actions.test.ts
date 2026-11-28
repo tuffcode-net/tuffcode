@@ -139,13 +139,14 @@ describe('action registry shape', () => {
     }
   });
 
-  it('only marks the delete actions destructive', () => {
+  it('only marks the delete action destructive', () => {
     const destructive = Object.values(ACTIONS)
       .filter((action) => action.destructive === true)
       .map((action) => action.id)
       .toSorted();
 
-    expect(destructive).toEqual(['message.delete', 'thread.delete']);
+    // Hiding a message is reversible, so only a real delete keeps the red styling.
+    expect(destructive).toEqual(['thread.delete']);
   });
 
   it('points every menu entry at a registered action', () => {
@@ -297,14 +298,14 @@ describe('message actions', () => {
     ]);
   });
 
-  it('removes a deleted message from both stores', async () => {
+  it('hides a message from this session in both stores', async () => {
     const item = userItem('msg_delete_user');
     const h = harness({ threadId: THREAD.id, userMessage: item });
 
     await runAction('message.delete', h.context);
 
     expect(h.store.removeMessage).toHaveBeenCalledWith(THREAD.id, item.messageId);
-    expect(h.notify.success).toHaveBeenCalledWith('Message deleted');
+    expect(h.notify.success).toHaveBeenCalledWith('Hidden from this session');
   });
 });
 

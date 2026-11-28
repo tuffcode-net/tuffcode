@@ -116,7 +116,7 @@ export function ContextMeter({ threadId, threshold }: ContextMeterProps) {
     try {
       await rpc.request('threads.send', { id: threadId, text: '/compact' });
       setOpen(false);
-      toast.success('Compacting the conversation.');
+      toast('Compacting the conversation.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not compact the conversation.');
     } finally {
