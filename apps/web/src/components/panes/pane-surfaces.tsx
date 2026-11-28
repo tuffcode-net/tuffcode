@@ -12,17 +12,25 @@ import {
   Users,
   type LucideIcon,
 } from 'lucide-react';
-import { useRef, type RefObject } from 'react';
+import { Suspense, lazy, useRef, type RefObject } from 'react';
 import { BrowserPane } from '../browser/BrowserPane';
 import { FilesPanel } from '../files/FilesPanel';
 import { useAppStore } from '../../store/app-store';
-import { DiffPanel } from '../diff/DiffPanel';
 import { BrainPanel } from '../inspector/BrainPanel';
 import { CouncilPanel } from '../inspector/CouncilPanel';
 import { SubagentPane } from '../subagents/SubagentPane';
-import { TerminalPanel } from '../terminal/TerminalPanel';
 import { ThreadView } from '../thread/ThreadView';
 import { sideThreadId, type FixedPaneSurface, type PaneSurface } from './pane-model';
+
+// Surfaces a pane can show but the thread does not need: the diff viewer and the
+// terminal load when a pane first shows them, keeping xterm and @pierre/diffs out of
+// the initial chunk.
+const DiffPanel = lazy(() =>
+  import('../diff/DiffPanel').then((module) => ({ default: module.DiffPanel })),
+);
+const TerminalPanel = lazy(() =>
+  import('../terminal/TerminalPanel').then((module) => ({ default: module.TerminalPanel })),
+);
 
 export const PANE_SURFACE_ICON: Record<FixedPaneSurface, LucideIcon> = {
   thread: MessagesSquare,
@@ -80,13 +88,21 @@ export function PaneSurfaceView({
         />
       );
     case 'diff':
-      return <DiffPanel threadId={threadId} onOpenInTerminal={onOpenInTerminal} />;
+      return (
+        <Suspense fallback={null}>
+          <DiffPanel threadId={threadId} onOpenInTerminal={onOpenInTerminal} />
+        </Suspense>
+      );
     case 'files':
       return <FilesPanel threadId={threadId} onOpenInTerminal={onOpenInTerminal} />;
     case 'browser':
       return <BrowserPane />;
     case 'terminal':
-      return <TerminalPanel threadId={threadId} />;
+      return (
+        <Suspense fallback={null}>
+          <TerminalPanel threadId={threadId} />
+        </Suspense>
+      );
     case 'brain':
       return <BrainPanel threadId={threadId} projectId={thread?.projectId ?? null} />;
     case 'council':

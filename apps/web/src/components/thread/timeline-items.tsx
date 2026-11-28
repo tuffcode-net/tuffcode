@@ -1,12 +1,5 @@
-import {
-  Button,
-  Markdown,
-  Spinner,
-  Textarea,
-  cn,
-  focusRing,
-  type MarkdownTheme,
-} from '@tuffcode/ui';
+import { Button, Spinner, Textarea, cn, focusRing, type MarkdownTheme } from '@tuffcode/ui';
+import { Markdown } from '@tuffcode/ui/markdown';
 import {
   Brain,
   Check,

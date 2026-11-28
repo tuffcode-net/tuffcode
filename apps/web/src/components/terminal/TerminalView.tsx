@@ -1,4 +1,5 @@
-import { Terminal, paletteFor, paletteToXterm, type TerminalHandle } from '@tuffcode/ui';
+import { paletteFor, paletteToXterm } from '@tuffcode/ui';
+import { Terminal, type TerminalHandle } from '@tuffcode/ui/terminal';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RpcClient } from '../../rpc/client';
 import { useAppStore } from '../../store/app-store';
