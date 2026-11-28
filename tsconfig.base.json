@@ -18,6 +18,7 @@
       "@tuffcode/contracts": ["./packages/contracts/src/index.ts"],
       "@tuffcode/server": ["./packages/server/src/index.ts"],
       "@tuffcode/adapters": ["./packages/adapters/src/index.ts"],
+      "@tuffcode/adapters/*": ["./packages/adapters/src/*/index.ts"],
       "@tuffcode/ui": ["./packages/ui/src/index.ts"],
       "@tuffcode/prompt": ["./packages/prompt/src/index.ts"]
     }

@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./acp": "./src/acp/index.ts",
+    "./anthropic": "./src/anthropic/index.ts",
+    "./claude": "./src/claude/index.ts",
+    "./codex": "./src/codex/index.ts",
+    "./openai": "./src/openai/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
