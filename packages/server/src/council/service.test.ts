@@ -1,14 +1,18 @@
 import {
   emptySubagentModels,
   type Approval,
+  type GoalState,
   type ProviderView,
+  type ReasoningEffort,
   type ServerEvent,
+  type TaskState,
   type Thread,
 } from '@tuffcode/contracts';
 import { describe, expect, it } from 'vitest';
 import { createEventBus, type EventBus } from '../events.js';
 import type { Runner } from '../runner/runner.js';
 import { createTestContext, silentLogger, type TestContext } from '../test-support.js';
+import type { CreateIntegrationBranchInput, IntegrationBranch } from './integration.js';
 import { createBusTurnRunner } from './runner-turn.js';
 import { createCouncil, resolveCouncilModel } from './service.js';
 import type {
@@ -51,9 +55,11 @@ const PASS_REVIEW = 'VERDICT: pass\nFINDINGS: none\nNOTES: ok';
 
 class FakePorts implements CouncilPorts {
   readonly created: ChildThreadRequest[] = [];
+  readonly integrations: CreateIntegrationBranchInput[] = [];
   readonly turns: RunTurnInput[] = [];
   readonly deleted: string[] = [];
   readonly pullRequests: { threadId: string; title: string }[] = [];
+  readonly synced: string[] = [];
   readonly approvals: {
     threadId: string;
     approvalId: string;
@@ -63,6 +69,7 @@ class FakePorts implements CouncilPorts {
   changed = true;
   workerActive = 0;
   workerMax = 0;
+  cleanups = 0;
   handler: TurnHandler;
   private watchers: { predicate: () => boolean; resolve: () => void }[] = [];
 
@@ -92,13 +99,26 @@ class FakePorts implements CouncilPorts {
       modelId: request.modelId,
       executionMode: request.executionMode,
       permissionMode: request.permissionMode,
+      reasoningEffort: request.effort ?? null,
       status: 'idle',
       worktreePath: `C:/worktrees/${id}`,
       branch: `tuffcode/${id}`,
-      baseBranch: request.baseBranch,
+      baseBranch: request.startRef ?? request.baseBranch,
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  async createIntegrationBranch(
+    input: CreateIntegrationBranchInput,
+  ): Promise<IntegrationBranch> {
+    this.integrations.push(input);
+    return {
+      branch: `council/${input.taskId}/base`,
+      cleanup: async () => {
+        this.cleanups += 1;
+      },
+    };
   }
 
   async deleteThread(threadId: string): Promise<void> {
@@ -131,6 +151,10 @@ class FakePorts implements CouncilPorts {
     this.pullRequests.push({ threadId, title: request.title });
     const number = this.pullRequests.length;
     return { url: `https://example.test/pull/${number}`, number };
+  }
+
+  async syncPullRequest(threadId: string): Promise<void> {
+    this.synced.push(threadId);
   }
 
   async changesForThread(): Promise<TaskChanges> {
@@ -168,6 +192,7 @@ interface Harness {
   ctx: TestContext;
   council: Council;
   ports: FakePorts;
+  bus: EventBus;
   events: ServerEvent[];
   disposed: string[];
   dispose(): Promise<void>;
@@ -296,6 +321,7 @@ function createHarness(configure?: (ports: FakePorts, bus: EventBus) => void): H
     ctx,
     council,
     ports,
+    bus,
     events,
     disposed,
     dispose: async () => {
@@ -332,19 +358,63 @@ function makeGate(): Gate {
   };
 }
 
-async function startGoal(harness: Harness, goal = 'Ship the widget'): Promise<string> {
+async function startGoal(
+  harness: Harness,
+  goal = 'Ship the widget',
+  autonomy: 'auto' | 'manual' = 'auto',
+): Promise<string> {
   const { goalId } = await harness.council.start({
     threadId: 'thr_goal',
     goal,
-    autonomy: 'auto',
+    autonomy,
   });
   return goalId;
+}
+
+/** Resolves on the next published event matching `predicate`, ignoring past ones. */
+function nextEvent(harness: Harness, predicate: (event: ServerEvent) => boolean): Promise<void> {
+  const seen = harness.events.length;
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const unsubscribe = harness.bus.subscribe(() => {
+    if (!harness.events.slice(seen).some(predicate)) return;
+    unsubscribe();
+    resolve();
+  });
+  return promise;
+}
+
+/** Resolves when the goal next reports the given state. */
+function nextGoalState(harness: Harness, goalId: string, state: GoalState): Promise<void> {
+  return nextEvent(
+    harness,
+    (event) =>
+      event.type === 'council.updated' &&
+      event.payload.goalId === goalId &&
+      event.payload.state === state,
+  );
+}
+
+/** Resolves when the named task next reports the given state. */
+function nextTaskState(
+  harness: Harness,
+  goalId: string,
+  title: string,
+  state: TaskState,
+): Promise<void> {
+  return nextEvent(harness, (event) => {
+    if (event.type !== 'council.updated' || event.payload.goalId !== goalId) return false;
+    if (event.payload.taskState !== state) return false;
+    const taskId = event.payload.taskId;
+    if (taskId === undefined) return false;
+    return harness.ctx.repos.council.getTask(taskId)?.title === title;
+  });
 }
 
 interface ModelChoice {
   providerId?: string;
   model?: string;
   fallbackModel?: string;
+  effort?: ReasoningEffort | null;
 }
 
 /** Writes the per-type model settings the council roles read. */
@@ -533,7 +603,7 @@ describe('council review loop', () => {
         );
       }
       return Promise.resolve(
-        result(input, input.text.includes('REVIEW ROUND') ? 'fixed' : 'worker done'),
+        result(input, input.text.includes('REWORK ROUND') ? 'fixed' : 'worker done'),
       );
     };
     try {
@@ -547,8 +617,10 @@ describe('council review loop', () => {
       const workerTurns = harness.ports.workerTurns();
       expect(workerTurns).toHaveLength(2);
       expect(workerTurns[1]?.threadId).toBe(workerTurns[0]?.threadId);
-      expect(workerTurns[1]?.text).toContain('REVIEW ROUND 1');
+      expect(workerTurns[1]?.text).toContain('REWORK ROUND 1');
       expect(workerTurns[1]?.text).toContain('Handle null');
+      // The revision is pushed before the next review, so the PR is not stale.
+      expect(harness.ports.synced).toEqual([workerTurns[0]?.threadId]);
     } finally {
       await harness.dispose();
     }
@@ -571,14 +643,22 @@ describe('council review loop', () => {
     };
     try {
       const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'Add widget', 'awaiting-captain');
+      const parked = harness.council.status(goalId);
+      expect(parked.goal.state).not.toBe('done');
+      expect(parked.tasks[0]?.state).toBe('awaiting-captain');
+      expect(parked.tasks[0]?.round).toBe(3);
+      expect(parked.reviews).toHaveLength(3);
+      expect(harness.ctx.repos.council.listEscalations(parked.tasks[0]?.id ?? '')).toHaveLength(1);
+      expect(harness.ports.workerTurns()).toHaveLength(3);
+
+      await harness.council.answerEscalation({
+        taskId: parked.tasks[0]?.id ?? '',
+        decision: 'accept',
+      });
       const goal = await harness.council.awaitGoal(goalId);
       expect(goal.state).toBe('done');
-      const status = harness.council.status(goalId);
-      expect(status.tasks[0]?.state).toBe('awaiting-captain');
-      expect(status.tasks[0]?.round).toBe(3);
-      expect(status.reviews).toHaveLength(3);
-      expect(harness.ctx.repos.council.listEscalations(status.tasks[0]?.id ?? '')).toHaveLength(1);
-      expect(harness.ports.workerTurns()).toHaveLength(3);
+      expect(harness.council.status(goalId).tasks[0]?.state).toBe('passed');
     } finally {
       await harness.dispose();
     }
@@ -599,11 +679,14 @@ describe('council review loop', () => {
     };
     try {
       const goalId = await startGoal(harness);
-      await harness.council.awaitGoal(goalId);
+      await nextTaskState(harness, goalId, 'Add widget', 'awaiting-captain');
       const task = harness.council.status(goalId).tasks[0];
       expect(task?.state).toBe('awaiting-captain');
       expect(task?.round).toBe(1);
       expect(harness.ctx.repos.council.listEscalations(task?.id ?? '')).toHaveLength(1);
+      await harness.council.answerEscalation({ taskId: task?.id ?? '', decision: 'accept' });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
     } finally {
       await harness.dispose();
     }
@@ -745,8 +828,9 @@ describe('council dependencies', () => {
 });
 
 describe('council dependencies', () => {
-  it('blocks a dependent task while its dependency awaits the captain', async () => {
+  it('parks a dependent task while its dependency awaits the captain', async () => {
     const harness = createHarness();
+    let reviews = 0;
     harness.ports.handler = (input, title) => {
       if (title.startsWith('Plan:')) {
         return Promise.resolve(
@@ -760,22 +844,137 @@ describe('council dependencies', () => {
         );
       }
       if (title.startsWith('Review:')) {
-        return Promise.resolve(result(input, 'VERDICT: escalate\nFINDINGS: needs a call'));
+        reviews += 1;
+        return Promise.resolve(
+          result(
+            input,
+            reviews === 1 ? 'VERDICT: escalate\nFINDINGS: needs a call' : PASS_REVIEW,
+          ),
+        );
       }
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      // The loop parks without publishing anything else, so a short real wait is the
+      // only way to observe that nothing happened: fake timers cannot advance a promise
+      // chain that is already parked on an answer RPC.
+      const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
+      setTimeout(settle, 20);
+      await settled;
+      const parked = harness.council.status(goalId);
+      expect(parked.goal.state).toBe('running');
+      expect(parked.tasks.find((task) => task.title === 'First')?.state).toBe('awaiting-captain');
+      expect(parked.tasks.find((task) => task.title === 'Second')?.state).toBe('queued');
+      expect(harness.ports.created.some((request) => request.title === 'Council: Second')).toBe(
+        false,
+      );
+
+      const first = parked.tasks.find((task) => task.title === 'First');
+      await harness.council.answerEscalation({
+        taskId: first?.id ?? '',
+        decision: 'accept',
+      });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      const tasks = harness.council.status(goalId).tasks;
+      expect(tasks.find((task) => task.title === 'First')?.state).toBe('passed');
+      expect(tasks.find((task) => task.title === 'Second')?.state).toBe('passed');
+      expect(harness.ports.created.some((request) => request.title === 'Council: Second')).toBe(
+        true,
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
+
+describe('council dependency branches', () => {
+  it('starts a dependent task from its dependency branch', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts'], ['First']),
+            ]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
       return Promise.resolve(result(input, 'worker done'));
     };
     try {
       const goalId = await startGoal(harness);
       const goal = await harness.council.awaitGoal(goalId);
       expect(goal.state).toBe('done');
+
       const tasks = harness.council.status(goalId).tasks;
-      expect(tasks.find((task) => task.title === 'First')?.state).toBe('awaiting-captain');
+      const first = tasks.find((task) => task.title === 'First');
+      const firstBranch = harness.ctx.repos.threads.get(first?.threadId ?? '')?.branch ?? '';
+      expect(firstBranch).toMatch(/^tuffcode\//);
+
+      const firstRequest = createdThread(harness, 'Council: First');
+      expect(firstRequest?.startRef).toBeUndefined();
+      expect(firstRequest?.baseBranch).toBe('main');
+
+      const secondRequest = createdThread(harness, 'Council: Second');
+      expect(secondRequest?.startRef).toBe(firstBranch);
+      expect(secondRequest?.baseBranch).toBe('main');
+
       const second = tasks.find((task) => task.title === 'Second');
-      expect(second?.state).toBe('blocked');
-      expect(second?.error).toContain('blocked by');
-      expect(harness.ports.created.some((request) => request.title === 'Council: Second')).toBe(
-        false,
-      );
+      expect(harness.ctx.repos.threads.get(second?.threadId ?? '')?.baseBranch).toBe(firstBranch);
+      expect(harness.ports.integrations).toHaveLength(0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('merges several dependencies into one base branch and removes it', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts']),
+              planTask('Third', ['src/third.ts'], ['First', 'Second']),
+            ]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+
+      const tasks = harness.council.status(goalId).tasks;
+      const third = tasks.find((task) => task.title === 'Third');
+      expect(third?.state).toBe('passed');
+
+      expect(harness.ports.integrations).toHaveLength(1);
+      const integration = harness.ports.integrations[0];
+      expect(integration?.projectId).toBe('prj_1');
+      expect(integration?.taskId).toBe(third?.id);
+      const dependencyBranches = ['First', 'Second'].map((title) => {
+        const task = tasks.find((row) => row.title === title);
+        return harness.ctx.repos.threads.get(task?.threadId ?? '')?.branch;
+      });
+      expect(integration?.branches).toEqual(dependencyBranches);
+      expect(integration?.branches).toHaveLength(2);
+
+      const thirdRequest = createdThread(harness, 'Council: Third');
+      expect(thirdRequest?.startRef).toBe(`council/${third?.id}/base`);
+      expect(harness.ports.cleanups).toBe(1);
     } finally {
       await harness.dispose();
     }
@@ -835,13 +1034,18 @@ describe('council model selection', () => {
 
   it('runs workers with the configured worker model and records it on the task', async () => {
     const harness = createHarness();
-    configureModels(harness, { worker: { providerId: 'prv_codex', model: 'gpt-worker' } });
+    configureModels(harness, {
+      worker: { providerId: 'prv_codex', model: 'gpt-worker', effort: 'high' },
+    });
     try {
       const goalId = await startGoal(harness);
       await harness.council.awaitGoal(goalId);
       const worker = createdThread(harness, 'Council:');
       expect(worker?.providerId).toBe('prv_codex');
       expect(worker?.modelId).toBe('gpt-worker');
+      expect(worker?.effort).toBe('high');
+      expect(createdThread(harness, 'Plan:')?.effort).toBeNull();
+      expect(createdThread(harness, 'Review:')?.effort).toBeNull();
       const task = harness.council.status(goalId).tasks[0];
       expect(task?.authorProvider).toBe('prv_codex');
       expect(task?.authorModel).toBe('gpt-worker');
@@ -1007,6 +1211,74 @@ describe('council planning failure', () => {
   });
 });
 
+describe('council planner retry', () => {
+  it('retries once with a correction block and finishes the plan', async () => {
+    const harness = createHarness();
+    let plannerTurns = 0;
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        plannerTurns += 1;
+        return Promise.resolve(
+          result(
+            input,
+            plannerTurns === 1
+              ? 'I cannot produce that.'
+              : planJson([planTask('Add widget', ['src/widget.ts'])]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      const goal = await harness.council.awaitGoal(goalId);
+
+      expect(goal.state).toBe('done');
+      expect(harness.council.status(goalId).tasks).toHaveLength(1);
+      expect(plannerTurns).toBe(2);
+      const plannerTurnsSeen = harness.ports.turns.filter((turn) =>
+        harness.ports.titles.get(turn.threadId)?.startsWith('Plan:'),
+      );
+      expect(plannerTurnsSeen).toHaveLength(2);
+      expect(plannerTurnsSeen[1]?.text).toContain('CORRECTION');
+      expect(plannerTurnsSeen[1]?.text).toContain('planner did not return a JSON object');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('fails the goal with both errors when the retry also fails', async () => {
+    const harness = createHarness();
+    let plannerTurns = 0;
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        plannerTurns += 1;
+        return Promise.resolve(
+          result(input, plannerTurns === 1 ? 'not json' : '{"tasks": "nope"}'),
+        );
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      const goal = await harness.council.awaitGoal(goalId);
+
+      expect(goal.state).toBe('failed');
+      expect(plannerTurns).toBe(2);
+      expect(harness.council.status(goalId).tasks).toHaveLength(0);
+      const failure = harness.ctx.repos.messages
+        .list('thr_goal')
+        .find((message) => message.content.includes('Council failed'));
+      expect(failure?.content).toContain('planner did not return a JSON object');
+      expect(failure?.content).toContain('plan.tasks must be an array');
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
+
 describe('council.latest', () => {
   it('returns the newest goal on the thread with its tasks and reviews', async () => {
     const harness = createHarness();
@@ -1048,6 +1320,10 @@ describe('council approval policy', () => {
           goal: `Ship it ${autonomy}`,
           autonomy,
         });
+        if (autonomy === 'manual') {
+          await nextGoalState(harness, goalId, 'awaiting-approval');
+          await harness.council.approvePlan(goalId);
+        }
         const goal = await harness.council.awaitGoal(goalId);
         expect(goal.state).toBe('done');
         expect(goal.autonomy).toBe(autonomy);
@@ -1057,6 +1333,344 @@ describe('council approval policy', () => {
       for (const approval of harness.ports.approvals) {
         expect(approval.decision).toBe('deny');
       }
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
+
+describe('council plan approval', () => {
+  it('parks a manual goal until the captain approves the plan', async () => {
+    const harness = createHarness();
+    try {
+      const goalId = await startGoal(harness, 'Ship the widget', 'manual');
+      await nextGoalState(harness, goalId, 'awaiting-approval');
+      const parked = harness.council.status(goalId);
+      expect(parked.plan.map((entry) => entry.title)).toEqual(['Add widget']);
+      expect(parked.plan[0]?.files).toEqual(['src/widget.ts']);
+      expect(parked.plan[0]?.dependsOn).toEqual([]);
+      expect(parked.plan[0]?.taskId).toBe(parked.tasks[0]?.id);
+      expect(parked.tasks.map((task) => task.state)).toEqual(['queued']);
+      expect(
+        harness.ports.created.some((request) => request.title.startsWith('Council:')),
+      ).toBe(false);
+      expect(harness.ports.workerTurns()).toHaveLength(0);
+
+      await harness.council.approvePlan(goalId);
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      expect(harness.council.status(goalId).tasks[0]?.state).toBe('passed');
+      expect(harness.ports.workerTurns()).toHaveLength(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('re-plans on captain feedback and parks again', async () => {
+    const harness = createHarness();
+    let plans = 0;
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        plans += 1;
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              plans === 1
+                ? planTask('Add widget', ['src/widget.ts'])
+                : planTask('Add gadget', ['src/gadget.ts']),
+            ]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness, 'Ship the widget', 'manual');
+      await nextGoalState(harness, goalId, 'awaiting-approval');
+      const parkedAgain = nextGoalState(harness, goalId, 'awaiting-approval');
+      await harness.council.revisePlan(goalId, 'Split the widget into two tasks');
+      await parkedAgain;
+
+      const revised = harness.council.status(goalId);
+      expect(revised.plan.map((entry) => entry.title)).toEqual(['Add gadget']);
+      expect(revised.tasks.map((task) => [task.title, task.state])).toEqual([
+        ['Add widget', 'cancelled'],
+        ['Add gadget', 'queued'],
+      ]);
+      expect(harness.ports.workerTurns()).toHaveLength(0);
+      const plannerTurns = harness.ports.turns.filter((turn) =>
+        (harness.ports.titles.get(turn.threadId) ?? '').startsWith('Plan:'),
+      );
+      expect(plannerTurns).toHaveLength(2);
+      expect(plannerTurns[1]?.text).toContain('REVISION');
+      expect(plannerTurns[1]?.text).toContain('Split the widget into two tasks');
+
+      await harness.council.approvePlan(goalId);
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      const tasks = harness.council.status(goalId).tasks;
+      expect(tasks.find((task) => task.title === 'Add gadget')?.state).toBe('passed');
+      expect(tasks.find((task) => task.title === 'Add widget')?.state).toBe('cancelled');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('fails the goal when the plan is revised twice without approval', async () => {
+    const harness = createHarness();
+    try {
+      const goalId = await startGoal(harness, 'Ship the widget', 'manual');
+      await nextGoalState(harness, goalId, 'awaiting-approval');
+      const secondPark = nextGoalState(harness, goalId, 'awaiting-approval');
+      await harness.council.revisePlan(goalId, 'First feedback');
+      await secondPark;
+      const thirdPark = nextGoalState(harness, goalId, 'awaiting-approval');
+      await harness.council.revisePlan(goalId, 'Second feedback');
+      await thirdPark;
+
+      await harness.council.revisePlan(goalId, 'Third feedback');
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('failed');
+      const report = harness.ctx.repos.messages
+        .list('thr_goal')
+        .find((message) => message.content.includes('Council failed'));
+      expect(report?.content).toContain('plan was revised twice without approval');
+      expect(harness.ports.workerTurns()).toHaveLength(0);
+      expect(
+        harness.council
+          .status(goalId)
+          .tasks.every((task) => task.state === 'cancelled' || task.state === 'failed'),
+      ).toBe(true);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('refuses an approval for a goal that is not parked', async () => {
+    const harness = createHarness();
+    try {
+      const goalId = await startGoal(harness);
+      await harness.council.awaitGoal(goalId);
+      await expect(harness.council.approvePlan(goalId)).rejects.toThrow(/no longer running/i);
+      await expect(harness.council.revisePlan(goalId, 'Change it')).rejects.toThrow(
+        /no longer running/i,
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
+
+describe('council escalation answers', () => {
+  it('runs a fan-in dependent after the captain accepts the escalated branch', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts'], ['First']),
+              planTask('Third', ['src/third.ts'], ['First']),
+              planTask('Fourth', ['src/fourth.ts'], ['Second', 'Third']),
+            ]),
+          ),
+        );
+      }
+      if (title === 'Review: First') {
+        return Promise.resolve(result(input, 'VERDICT: escalate\nFINDINGS: needs a call'));
+      }
+      if (title.startsWith('Review:')) return Promise.resolve(result(input, PASS_REVIEW));
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      // The loop parks without publishing anything else, so a short real wait is the
+      // only way to observe that the rest of the plan is still queued and not dead:
+      // fake timers cannot advance a promise chain already parked on an answer RPC.
+      const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
+      setTimeout(settle, 20);
+      await settled;
+      // The fan-in task waits through the two branches, so nothing may be terminalized
+      // while the captain still owes an answer.
+      const parked = harness.council.status(goalId);
+      expect(parked.goal.state).toBe('running');
+      for (const title of ['Second', 'Third', 'Fourth']) {
+        expect(parked.tasks.find((task) => task.title === title)?.state).toBe('queued');
+      }
+      const first = parked.tasks.find((task) => task.title === 'First');
+      await harness.council.answerEscalation({ taskId: first?.id ?? '', decision: 'accept' });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      const tasks = harness.council.status(goalId).tasks;
+      for (const title of ['First', 'Second', 'Third', 'Fourth']) {
+        expect(tasks.find((task) => task.title === title)?.state).toBe('passed');
+      }
+      expect(harness.ports.created.some((request) => request.title === 'Council: Fourth')).toBe(
+        true,
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('fails a dropped task and its dependent', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts'], ['First']),
+            ]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) {
+        return Promise.resolve(result(input, 'VERDICT: escalate\nFINDINGS: needs a call'));
+      }
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      const first = harness.council.status(goalId).tasks.find((task) => task.title === 'First');
+      await harness.council.answerEscalation({ taskId: first?.id ?? '', decision: 'drop' });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('failed');
+      const tasks = harness.council.status(goalId).tasks;
+      const dropped = tasks.find((task) => task.title === 'First');
+      expect(dropped?.state).toBe('failed');
+      expect(dropped?.error).toBe('captain dropped the task');
+      const second = tasks.find((task) => task.title === 'Second');
+      expect(second?.state).toBe('failed');
+      expect(second?.error).toContain('blocked by');
+      expect(harness.ports.created.some((request) => request.title === 'Council: Second')).toBe(
+        false,
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('runs one more worker turn on the same thread and lets the review decide', async () => {
+    const harness = createHarness();
+    let reviews = 0;
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(
+            input,
+            planJson([
+              planTask('First', ['src/first.ts']),
+              planTask('Second', ['src/second.ts'], ['First']),
+            ]),
+          ),
+        );
+      }
+      if (title.startsWith('Review:')) {
+        reviews += 1;
+        return Promise.resolve(
+          result(
+            input,
+            reviews === 1 ? 'VERDICT: escalate\nFINDINGS: Handle the null case' : PASS_REVIEW,
+          ),
+        );
+      }
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      const first = harness.council.status(goalId).tasks.find((task) => task.title === 'First');
+      const childThreadId = first?.threadId ?? '';
+      await harness.council.answerEscalation({
+        taskId: first?.id ?? '',
+        decision: 'revise',
+        feedback: 'Cover the empty input',
+      });
+      const goal = await harness.council.awaitGoal(goalId);
+      expect(goal.state).toBe('done');
+      const tasks = harness.council.status(goalId).tasks;
+      expect(tasks.find((task) => task.title === 'First')?.state).toBe('passed');
+      expect(tasks.find((task) => task.title === 'First')?.round).toBe(2);
+      expect(tasks.find((task) => task.title === 'Second')?.state).toBe('passed');
+      const turns = harness.ports.workerTurns().filter((turn) => turn.threadId === childThreadId);
+      expect(turns).toHaveLength(2);
+      expect(turns[1]?.text).toContain('CAPTAIN REVISION');
+      expect(turns[1]?.text).toContain('Cover the empty input');
+      expect(turns[1]?.text).toContain('Handle the null case');
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('keeps the task awaiting the captain when the revision escalates again', async () => {
+    const harness = createHarness();
+    harness.ports.handler = (input, title) => {
+      if (title.startsWith('Plan:')) {
+        return Promise.resolve(
+          result(input, planJson([planTask('First', ['src/first.ts'])])),
+        );
+      }
+      if (title.startsWith('Review:')) {
+        return Promise.resolve(result(input, 'VERDICT: escalate\nFINDINGS: still wrong'));
+      }
+      return Promise.resolve(result(input, 'worker done'));
+    };
+    try {
+      const goalId = await startGoal(harness);
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      const first = harness.council.status(goalId).tasks.find((task) => task.title === 'First');
+      await harness.council.answerEscalation({
+        taskId: first?.id ?? '',
+        decision: 'revise',
+        feedback: 'Try once more',
+      });
+      await nextTaskState(harness, goalId, 'First', 'awaiting-captain');
+      const task = harness.council.status(goalId).tasks[0];
+      expect(task?.state).toBe('awaiting-captain');
+      expect(task?.round).toBe(2);
+      expect(harness.ctx.repos.council.listEscalations(task?.id ?? '')).toHaveLength(2);
+    } finally {
+      await harness.dispose();
+    }
+  });
+});
+
+describe('council task events', () => {
+  it('publishes taskId and taskState on council.updated', async () => {
+    const harness = createHarness();
+    try {
+      const goalId = await startGoal(harness);
+      await harness.council.awaitGoal(goalId);
+      const task = harness.council.status(goalId).tasks[0];
+      const taskEvents = harness.events.filter(
+        (event) =>
+          event.type === 'council.updated' &&
+          event.payload.goalId === goalId &&
+          event.payload.taskId !== undefined,
+      );
+      expect(taskEvents.length).toBeGreaterThan(0);
+      for (const event of taskEvents) {
+        if (event.type !== 'council.updated') continue;
+        expect(event.payload.taskState).toBeDefined();
+        expect(event.payload.state).toBeDefined();
+      }
+      expect(
+        taskEvents.some(
+          (event) =>
+            event.type === 'council.updated' &&
+            event.payload.taskId === task?.id &&
+            event.payload.taskState === 'passed',
+        ),
+      ).toBe(true);
     } finally {
       await harness.dispose();
     }

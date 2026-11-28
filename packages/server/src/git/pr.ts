@@ -1,7 +1,7 @@
 import type { Repos } from '../db/repos/index.js';
 import { badRequest, conflict, RpcError } from '../errors.js';
 import { requireWorktree } from './context.js';
-import { runExecutable, GitError } from './runGit.js';
+import { runExecutable, tryRunGit, GitError } from './runGit.js';
 import { currentBranch } from './worktree.js';
 
 export interface PullRequestInput {
@@ -30,6 +30,24 @@ export function parsePullRequestUrl(output: string): PullRequestResult | null {
 }
 
 /**
+ * `gh pr create --base` takes a branch, never a commit. Council records a temporary
+ * integration branch as the merge commit it started from, so a recorded value that is
+ * not a local or remote branch falls back to the project's default branch.
+ */
+async function branchBase(cwd: string, recorded: string, fallback: string): Promise<string> {
+  const local = await tryRunGit(
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${recorded}`],
+    cwd,
+  );
+  if (local.ok) return recorded;
+  const remote = await tryRunGit(
+    ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${recorded}`],
+    cwd,
+  );
+  return remote.ok ? recorded : fallback;
+}
+
+/**
  * Runs `gh pr create` in the thread worktree. Drafts are the default; pass
  * `draft: false` to open a ready-for-review PR. gh's own failures are surfaced as
  * bad-request with its last stderr line, never as a stack trace.
@@ -45,7 +63,8 @@ export async function openPullRequest(
   const branch = (await currentBranch(worktreePath)) ?? thread.branch;
   if (branch === null) throw conflict('thread is not on a branch');
   const project = repos.projects.get(thread.projectId);
-  const base = thread.baseBranch ?? project?.defaultBranch ?? 'main';
+  const fallbackBase = project?.defaultBranch ?? 'main';
+  const base = await branchBase(worktreePath, thread.baseBranch ?? fallbackBase, fallbackBase);
   const args = [
     'pr',
     'create',

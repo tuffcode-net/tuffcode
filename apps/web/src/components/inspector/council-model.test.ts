@@ -20,6 +20,7 @@ describe('council state labels', () => {
     expect(GOAL_STATES.map((state) => GOAL_STATE_LABEL[state])).toEqual([
       'Intake',
       'Planning',
+      'Awaiting approval',
       'Provisioning',
       'Running',
       'Reviewing',
@@ -28,6 +29,7 @@ describe('council state labels', () => {
       'Failed',
       'Cancelled',
     ]);
+    expect(GOAL_STATE_TONE['awaiting-approval']).toBe('warning');
     expect(GOAL_STATE_TONE.done).toBe('success');
     expect(GOAL_STATE_TONE.failed).toBe('error');
     expect(GOAL_STATE_TONE.cancelled).toBe('neutral');

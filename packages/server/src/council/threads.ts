@@ -2,9 +2,29 @@ import type { Thread } from '@tuffcode/contracts';
 import { newId, worktreesRoot } from '@tuffcode/shared';
 import type { Repos } from '../db/repos/index.js';
 import { badRequest, notFound, RpcError } from '../errors.js';
-import { provisionWorktree, removeWorktree } from '../git/index.js';
+import { provisionWorktree, removeWorktree, tryRunGit } from '../git/index.js';
 import { deleteThread } from '../threads.js';
+import { isIntegrationBranch } from './integration.js';
 import type { ChildThreadRequest } from './types.js';
+
+/**
+ * The base a thread row records. The review diff and every later diff resolve against
+ * it, so it must outlive provisioning: a temporary council integration branch is
+ * deleted as soon as the worktree exists, so its row records the commit it pointed at.
+ */
+async function recordedBase(
+  repoPath: string,
+  startPoint: string,
+  fallback: string,
+): Promise<string> {
+  if (!isIntegrationBranch(startPoint)) return fallback;
+  const commit = await tryRunGit(
+    ['rev-parse', '--verify', '--quiet', `${startPoint}^{commit}`],
+    repoPath,
+  );
+  const sha = commit.ok ? commit.stdout.trim() : '';
+  return sha.length > 0 ? sha : fallback;
+}
 
 /**
  * Creates a council child thread with its own `tuffcode/<threadId>` worktree and a
@@ -26,16 +46,16 @@ export async function provisionChildThread(
   if (request.modelId.trim().length === 0) throw badRequest('model id is required');
 
   const id = newId('thr');
-  const baseBranch =
-    request.baseBranch.trim().length > 0 ? request.baseBranch : project.defaultBranch;
+  const startPoint = (request.startRef ?? request.baseBranch).trim() || project.defaultBranch;
   const root = repos.settings.get().worktreeRoot ?? worktreesRoot();
   const worktree = await provisionWorktree({
     repoPath: project.path,
-    baseBranch,
+    baseBranch: startPoint,
     projectId: project.id,
     threadId: id,
     worktreesRoot: root,
   });
+  const baseBranch = await recordedBase(project.path, startPoint, worktree.baseBranch);
   const now = new Date().toISOString();
   try {
     return repos.threads.create({
@@ -47,10 +67,11 @@ export async function provisionChildThread(
       modelId: request.modelId,
       executionMode: request.executionMode,
       permissionMode: request.permissionMode,
+      reasoningEffort: request.effort ?? null,
       status: 'idle',
       worktreePath: worktree.path,
       branch: worktree.branch,
-      baseBranch: worktree.baseBranch,
+      baseBranch,
       createdAt: now,
       updatedAt: now,
     });

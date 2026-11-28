@@ -95,9 +95,11 @@ export type {
 export type { SettingsRepo } from './settings.js';
 export type {
   AddSubagentMessageInput,
+  AddSubagentReportInput,
   CreateSubagentInput,
   FinishSubagentInput,
   SubagentRecord,
+  SubagentReport,
   SubagentTelemetry,
   SubagentsRepo,
 } from './subagents.js';

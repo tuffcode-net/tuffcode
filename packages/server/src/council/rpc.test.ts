@@ -13,7 +13,7 @@ const goal: Goal = {
   reportedAt: null,
 };
 
-const status: CouncilStatus = { goal, tasks: [], reviews: [] };
+const status: CouncilStatus = { goal, tasks: [], reviews: [], escalations: [], plan: [] };
 
 function fakeCouncil(): { council: Council; calls: string[] } {
   const calls: string[] = [];
@@ -26,6 +26,15 @@ function fakeCouncil(): { council: Council; calls: string[] } {
       },
       cancel: async (goalId) => {
         calls.push(`cancel:${goalId}`);
+      },
+      approvePlan: async (goalId) => {
+        calls.push(`approvePlan:${goalId}`);
+      },
+      revisePlan: async (goalId, feedback) => {
+        calls.push(`revisePlan:${goalId}:${feedback}`);
+      },
+      answerEscalation: async (input) => {
+        calls.push(`answerEscalation:${input.taskId}:${input.decision}`);
       },
       status: (goalId) => {
         calls.push(`status:${goalId}`);
@@ -42,11 +51,14 @@ function fakeCouncil(): { council: Council; calls: string[] } {
 }
 
 describe('createCouncilHandlers', () => {
-  it('registers exactly the four council methods', () => {
+  it('registers exactly the council methods', () => {
     const { council } = fakeCouncil();
     expect(Array.from(createCouncilHandlers({ council }).keys()).toSorted()).toEqual([
+      'council.answerEscalation',
+      'council.approvePlan',
       'council.cancel',
       'council.latest',
+      'council.revisePlan',
       'council.start',
       'council.status',
     ]);
@@ -67,5 +79,27 @@ describe('createCouncilHandlers', () => {
     expect(handlers.get('council.status')?.({ goalId: 'gol_1' })).toBe(status);
     expect(handlers.get('council.latest')?.({ threadId: 'thr_1' })).toBe(status);
     expect(calls).toEqual(['start:thr_1:auto', 'cancel:gol_1', 'status:gol_1', 'latest:thr_1']);
+  });
+
+  it('delegates the captain answers', async () => {
+    const { council, calls } = fakeCouncil();
+    const handlers = createCouncilHandlers({ council });
+
+    await expect(handlers.get('council.approvePlan')?.({ goalId: 'gol_1' })).resolves.toEqual({});
+    await expect(
+      handlers.get('council.revisePlan')?.({ goalId: 'gol_1', feedback: 'Split the parser' }),
+    ).resolves.toEqual({});
+    await expect(
+      handlers.get('council.answerEscalation')?.({
+        taskId: 'tsk_1',
+        decision: 'revise',
+        feedback: 'Cover the null case',
+      }),
+    ).resolves.toEqual({});
+    expect(calls).toEqual([
+      'approvePlan:gol_1',
+      'revisePlan:gol_1:Split the parser',
+      'answerEscalation:tsk_1:revise',
+    ]);
   });
 });

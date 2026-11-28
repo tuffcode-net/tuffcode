@@ -89,20 +89,40 @@ describe('review comments', () => {
   it('resolves and reopens a comment', async () => {
     makeThread('thr_a');
     const created = await addComment('thr_a');
+    const deliveredAt = '2026-01-01T00:00:00.000Z';
+    ctx.repos.comments.markDelivered([created.id], deliveredAt);
 
     const resolved = await dispatch(handlers, {
       id: 'resolve',
       method: 'comments.resolve',
       params: { id: created.id, resolved: true },
     });
-    expect(resolved).toMatchObject({ ok: true, result: { id: created.id, resolved: true } });
+    expect(resolved).toMatchObject({
+      ok: true,
+      result: { id: created.id, resolved: true, deliveredAt },
+    });
 
+    // Reopening returns the comment to the unsent state so the next turn carries it.
     const reopened = await dispatch(handlers, {
       id: 'reopen',
       method: 'comments.resolve',
       params: { id: created.id, resolved: false },
     });
-    expect(reopened).toMatchObject({ ok: true, result: { id: created.id, resolved: false } });
+    expect(reopened).toMatchObject({
+      ok: true,
+      result: { id: created.id, resolved: false, deliveredAt: null },
+    });
+  });
+
+  it('keeps the first delivery stamp when a comment is sent again', async () => {
+    makeThread('thr_a');
+    const created = await addComment('thr_a');
+    const first = '2026-01-01T00:00:00.000Z';
+    ctx.repos.comments.markDelivered([created.id], first);
+    ctx.repos.comments.markDelivered([created.id], '2026-02-02T00:00:00.000Z');
+
+    expect(ctx.repos.comments.get(created.id)?.deliveredAt).toBe(first);
+    expect(created.deliveredAt).toBeNull();
   });
 
   it('rejects operations on a missing thread', async () => {

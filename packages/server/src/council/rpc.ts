@@ -27,5 +27,19 @@ export function createCouncilHandlers(deps: CouncilHandlerDeps): RpcHandlers {
   handlers.set('council.latest', (params) =>
     deps.council.latest((params as RpcParams<'council.latest'>).threadId),
   );
+  handlers.set('council.approvePlan', async (params) => {
+    const { goalId } = params as RpcParams<'council.approvePlan'>;
+    await deps.council.approvePlan(goalId);
+    return {};
+  });
+  handlers.set('council.revisePlan', async (params) => {
+    const { goalId, feedback } = params as RpcParams<'council.revisePlan'>;
+    await deps.council.revisePlan(goalId, feedback);
+    return {};
+  });
+  handlers.set('council.answerEscalation', async (params) => {
+    await deps.council.answerEscalation(params as RpcParams<'council.answerEscalation'>);
+    return {};
+  });
   return handlers;
 }

@@ -74,6 +74,12 @@ export function emptyMcpDraft(): McpDraft {
   };
 }
 
+/** One argument as text that `parseMcpArgs` reads back as the same single argument. */
+export function formatMcpArg(arg: string): string {
+  if (!/[\s"']/.test(arg)) return arg;
+  return arg.includes('"') ? `'${arg}'` : `"${arg}"`;
+}
+
 /** Never copies a credential into the draft: only `hasSecret` describes it. */
 export function mcpDraftFromServer(server: McpServer): McpDraft {
   return {
@@ -81,7 +87,7 @@ export function mcpDraftFromServer(server: McpServer): McpDraft {
     label: server.label,
     transport: server.transport,
     command: server.command,
-    args: server.args.join('\n'),
+    args: server.args.map(formatMcpArg).join('\n'),
     env: Object.keys(server.env).length > 0 ? JSON.stringify(server.env, null, 2) : '',
     cwd: server.cwd ?? '',
     url: server.url ?? '',
@@ -94,9 +100,44 @@ export function mcpDraftFromServer(server: McpServer): McpDraft {
   };
 }
 
-/** Arguments are whitespace separated; one per line also works. */
+/**
+ * Arguments are separated by whitespace, and one argument per line also works. A
+ * quoted segment stays one argument, so a Windows path with a space survives:
+ * `"C:/Users/me/the code/fixture.mjs"`.
+ */
 export function parseMcpArgs(text: string): string[] {
-  return text.split(/\s+/).filter((arg) => arg.length > 0);
+  const args: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let started = false;
+  for (const char of text) {
+    if (quote !== null) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      started = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) {
+        args.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    current += char;
+    started = true;
+  }
+  if (started) args.push(current);
+  return args;
 }
 
 /** Parses the env field as a JSON object of strings; blank means no variables. */

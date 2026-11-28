@@ -1,8 +1,6 @@
 import type {
-  GoalAutonomy,
   GoalState,
   RpcResult,
-  Settings,
   Task,
   TaskState,
 } from '@tuffcode/contracts';
@@ -82,14 +80,4 @@ export function isCancelPending(
  */
 export function stillTracksGoal(trackedGoalId: string | null, target: string): boolean {
   return trackedGoalId === target;
-}
-
-/**
- * Autonomy for a goal started from the composer. Settings carry no council field,
- * so the permission default is the user's stated trust level: full auto means the
- * council may merge without a captain, anything stricter leaves the decision to
- * the user.
- */
-export function autonomyFromSettings(settings: Settings | null | undefined): GoalAutonomy {
-  return settings?.defaultPermissionMode === 'full-auto' ? 'auto' : 'manual';
 }

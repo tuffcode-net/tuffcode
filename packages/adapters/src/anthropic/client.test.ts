@@ -125,6 +125,35 @@ describe('AnthropicClient', () => {
     expect(tools[0]?.input_schema).toBeDefined();
   });
 
+  it('marks the static system head and the last tool as cache breakpoints', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(streamOf(''));
+    };
+    const client = new AnthropicClient(
+      { baseUrl: DEFAULT_ANTHROPIC_BASE_URL, headers: {}, secret: 'sk-ant-test', maxTokens: 128 },
+      { fetchFn, sleep: async () => {}, logger },
+    );
+    const staticHead = 'You are Tuffcode.';
+    const dynamic = '## Brain notes\n- prefer pnpm';
+
+    await client.stream(
+      { ...request, system: `${staticHead}\n\n${dynamic}`, systemStatic: staticHead },
+      new AbortController().signal,
+    );
+
+    expect(bodies[0]?.system).toEqual([
+      { type: 'text', text: staticHead, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: `\n\n${dynamic}` },
+    ]);
+    const blocks = bodies[0]?.system as { text: string }[];
+    expect(blocks.map((block) => block.text).join('')).toBe(`${staticHead}\n\n${dynamic}`);
+    const tools = bodies[0]?.tools as { name: string; cache_control?: unknown }[];
+    expect(tools.at(-1)?.cache_control).toEqual({ type: 'ephemeral' });
+    expect(tools[0]?.cache_control).toBeUndefined();
+  });
+
   it('offers only the allowlisted tools, and none when the allowlist is empty', async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
@@ -142,6 +171,92 @@ describe('AnthropicClient', () => {
 
     await client.stream({ ...request, toolAllowlist: [] }, new AbortController().signal);
     expect(bodies[1]?.tools).toBeUndefined();
+  });
+
+  it('sends adaptive thinking with an effort level on 4.7 and later', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(streamOf(''));
+    };
+    const client = new AnthropicClient(
+      { baseUrl: DEFAULT_ANTHROPIC_BASE_URL, headers: {}, secret: 'key', maxTokens: 1024 },
+      { fetchFn, sleep: async () => {}, logger },
+    );
+
+    await client.stream(
+      { ...request, model: 'claude-opus-4-7', reasoningEffort: 'high' },
+      new AbortController().signal,
+    );
+    await client.stream(
+      { ...request, model: 'claude-sonnet-5-5', reasoningEffort: 'xhigh' },
+      new AbortController().signal,
+    );
+    await client.stream(
+      { ...request, model: 'claude-haiku-5-5', reasoningEffort: 'medium' },
+      new AbortController().signal,
+    );
+
+    // 4.7 and later reject the manual shape with a 400, so no budget is sent at all.
+    for (const body of bodies) {
+      expect(body.thinking).toEqual({ type: 'adaptive' });
+      expect(JSON.stringify(body)).not.toContain('budget_tokens');
+    }
+    expect(bodies[0]?.output_config).toEqual({ effort: 'high' });
+    expect(bodies[1]?.output_config).toEqual({ effort: 'xhigh' });
+    expect(bodies[2]?.output_config).toEqual({ effort: 'medium' });
+    // Adaptive thinking has no budget, so max_tokens stays the caller's 128.
+    expect(bodies[0]?.max_tokens).toBe(128);
+  });
+
+  it('keeps the manual thinking budget on 4.5 and earlier', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(streamOf(''));
+    };
+    const client = new AnthropicClient(
+      { baseUrl: DEFAULT_ANTHROPIC_BASE_URL, headers: {}, secret: 'key', maxTokens: 1024 },
+      { fetchFn, sleep: async () => {}, logger },
+    );
+
+    await client.stream(
+      { ...request, model: 'claude-opus-4-5-20251101', reasoningEffort: 'high' },
+      new AbortController().signal,
+    );
+    await client.stream(
+      { ...request, model: 'claude-3-7-sonnet-20250219', reasoningEffort: 'low' },
+      new AbortController().signal,
+    );
+
+    expect(bodies[0]?.thinking).toEqual({ type: 'enabled', budget_tokens: 24000 });
+    expect(bodies[0]?.output_config).toBeUndefined();
+    expect(bodies[0]?.max_tokens).toBe(24000 + 4096);
+    expect(bodies[1]?.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 });
+  });
+
+  it('uses adaptive thinking on 4.6 and drops xhigh where the model lacks it', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = async (_url: string, init: RequestInit): Promise<Response> => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response(streamOf(''));
+    };
+    const client = new AnthropicClient(
+      { baseUrl: DEFAULT_ANTHROPIC_BASE_URL, headers: {}, secret: 'key', maxTokens: 64 },
+      { fetchFn, sleep: async () => {}, logger },
+    );
+
+    await client.stream(
+      { ...request, model: 'claude-sonnet-4-6', reasoningEffort: 'xhigh' },
+      new AbortController().signal,
+    );
+    // No effort means no thinking, which keeps temperature usable.
+    await client.stream({ ...request, model: 'claude-opus-4-7' }, new AbortController().signal);
+
+    expect(bodies[0]?.thinking).toEqual({ type: 'adaptive' });
+    expect(bodies[0]?.output_config).toEqual({ effort: 'high' });
+    expect(bodies[1]?.thinking).toBeUndefined();
+    expect(bodies[1]?.output_config).toBeUndefined();
   });
 
   it('retries once on 429 and honours retry-after', async () => {

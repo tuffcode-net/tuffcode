@@ -109,4 +109,36 @@ describe('messages repo', () => {
     ctx.repos.messages.add(input);
     expect(() => ctx.repos.messages.add(input)).toThrow();
   });
+
+  it('round-trips the attachments a user sent with a message', () => {
+    ctx.repos.messages.add({
+      id: 'msg_with_image',
+      threadId: 'thr_a',
+      role: 'user',
+      content: 'look at this',
+      attachments: [
+        { name: 'shot.png', id: `${'a'.repeat(64)}.png`, mimeType: 'image/png' },
+        { name: 'notes.txt', path: 'C:/work/notes.txt' },
+      ],
+      createdAt: ISO,
+    });
+
+    const [message] = ctx.repos.messages.list('thr_a');
+    expect(message?.attachments).toEqual([
+      { name: 'shot.png', id: `${'a'.repeat(64)}.png`, mimeType: 'image/png' },
+      { name: 'notes.txt', path: 'C:/work/notes.txt' },
+    ]);
+  });
+
+  it('leaves attachments absent when a row never had them', () => {
+    ctx.repos.messages.add({
+      id: 'msg_plain',
+      threadId: 'thr_a',
+      role: 'user',
+      content: 'no files',
+      createdAt: ISO,
+    });
+
+    expect(ctx.repos.messages.list('thr_a')[0]).not.toHaveProperty('attachments');
+  });
 });

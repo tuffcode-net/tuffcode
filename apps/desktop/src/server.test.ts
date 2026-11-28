@@ -44,7 +44,7 @@ describe('resolveServerEntry', () => {
 
   it('falls back to the workspace server build during development', () => {
     expect(resolveServerEntry(baseEntryOptions)).toBe(
-      resolve('C:', 'repo', 'packages', 'server', 'dist', 'server.js'),
+      resolve('C:/repo', 'packages', 'server', 'dist', 'server.js'),
     );
   });
 

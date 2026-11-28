@@ -23,6 +23,29 @@ export interface ContextSectionInput {
 
 export interface ConversationEntry {
   content: string;
+  /** Images the message carries; each costs tokens even with no text. */
+  attachments?: readonly { mimeType?: string; width?: number; height?: number }[];
+}
+
+/** A provider resizes an image to about 1,568 px and charges about 1,600 tokens. */
+const MAX_IMAGE_TOKENS = 1600;
+
+/** Used when an older attachment has no recorded pixel size. */
+const UNKNOWN_IMAGE_TOKENS = 1100;
+
+/** The provider-neutral token cost of the images in one message. */
+export function imageTokens(
+  attachments: ConversationEntry['attachments'],
+): number {
+  let total = 0;
+  for (const attachment of attachments ?? []) {
+    if (attachment.mimeType?.startsWith('image/') !== true) continue;
+    total +=
+      attachment.width === undefined || attachment.height === undefined
+        ? UNKNOWN_IMAGE_TOKENS
+        : Math.min(MAX_IMAGE_TOKENS, Math.ceil((attachment.width * attachment.height) / 750));
+  }
+  return total;
 }
 
 export interface ContextEstimateInput {
@@ -61,7 +84,10 @@ export function estimateContext(input: ContextEstimateInput): ContextUsage {
   }));
 
   const messageTokens = input.messages.reduce(
-    (sum, message) => sum + (message.content.length === 0 ? 0 : estimateTokens(message.content)),
+    (sum, message) =>
+      sum +
+      (message.content.length === 0 ? 0 : estimateTokens(message.content)) +
+      imageTokens(message.attachments),
     0,
   );
   segments.push({ name: 'messages', tokens: messageTokens });

@@ -62,6 +62,7 @@ function child(
     finishedAt: null,
     events: [],
     nextSeq: 0,
+    closedAt: null,
     messages: [],
     awaitingReopen: false,
     ...overrides,

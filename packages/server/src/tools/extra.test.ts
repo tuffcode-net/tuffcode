@@ -616,6 +616,25 @@ describe('extra tools', () => {
     ]);
   });
 
+  it('refuses permission and tool-list settings the agent must not widen', async () => {
+    const h = harness();
+    const before = ctx.repos.settings.get();
+
+    for (const key of ['defaultPermissionMode', 'enabledTools']) {
+      const text = await h.run(
+        'config',
+        { action: 'settings.set', key, value: 'full-auto' },
+        'C:/work',
+      );
+      expect(text).toContain(`setting not allowed: ${key}`);
+    }
+
+    const after = ctx.repos.settings.get();
+    expect(after.defaultPermissionMode).toBe(before.defaultPermissionMode);
+    expect(after.enabledTools).toEqual(before.enabledTools);
+    expect(h.events).toEqual([]);
+  });
+
   it('tells the palette to re-list after a config write and stays quiet on a failure', async () => {
     const h = harness();
 

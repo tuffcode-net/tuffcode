@@ -75,6 +75,7 @@ describe('subagents repo', () => {
       startedAt: null,
       finishedAt: null,
       unread: 0,
+      closedAt: null,
       createdAt: CREATED,
       updatedAt: CREATED,
     });
@@ -109,6 +110,15 @@ describe('subagents repo', () => {
     expect(reopened.toolCount).toBe(4);
   });
 
+  it('starts a child at rework round zero and records each round', () => {
+    create();
+    expect(requireRecord(ctx.repos.subagents.get('sub_1')).reworkRound).toBe(0);
+
+    ctx.repos.subagents.setReworkRound('sub_1', 2);
+
+    expect(requireRecord(ctx.repos.subagents.get('sub_1')).reworkRound).toBe(2);
+  });
+
   it('keeps a mailbox per child and counts unread reports', () => {
     create();
     ctx.repos.subagents.addMessage({
@@ -133,6 +143,46 @@ describe('subagents repo', () => {
     expect(ctx.repos.subagents.markRead('sub_1', UPDATED)).toBe(1);
     expect(ctx.repos.subagents.get('sub_1')?.unread).toBe(0);
     expect(ctx.repos.subagents.unreadMessages('sub_1')).toEqual([]);
+  });
+
+  it('stores every report whole and exposes the newest on the record', () => {
+    create();
+    const first = ctx.repos.subagents.addReport({
+      id: 'srep_1',
+      childId: 'sub_1',
+      text: 'first answer',
+      createdAt: CREATED,
+    });
+    const second = ctx.repos.subagents.addReport({
+      id: 'srep_2',
+      childId: 'sub_1',
+      text: 'x'.repeat(12_000),
+      createdAt: UPDATED,
+    });
+    expect(first.text).toBe('first answer');
+    expect(ctx.repos.subagents.getReport('srep_1')?.text).toBe('first answer');
+    expect(ctx.repos.subagents.getReport('srep_missing')).toBeUndefined();
+    expect(ctx.repos.subagents.latestReport('sub_1')?.id).toBe('srep_2');
+    expect(ctx.repos.subagents.latestReport('sub_2')).toBeUndefined();
+
+    const record = requireRecord(ctx.repos.subagents.get('sub_1'));
+    expect(record.reportId).toBe('srep_2');
+    expect(record.reportChars).toBe(second.text.length);
+    expect(toSubagentView(record)).toMatchObject({
+      reportId: 'srep_2',
+      reportChars: 12_000,
+    });
+
+    const finished = requireRecord(
+      ctx.repos.subagents.finish('sub_1', {
+        status: 'failed',
+        summary: 'blocked on the provider',
+        footerStatus: 'blocked',
+        updatedAt: UPDATED,
+      }),
+    );
+    expect(finished.footerStatus).toBe('blocked');
+    expect(toSubagentView(finished).footerStatus).toBe('blocked');
   });
 
   it('carries the child thread id through setRunning into the view', () => {

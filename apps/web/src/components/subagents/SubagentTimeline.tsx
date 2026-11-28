@@ -11,6 +11,8 @@ import {
   ToolGroup,
 } from '../thread/timeline-items';
 import { groupTurnBlocks, type TimelineBlock } from '../thread/turn-blocks';
+import { SUBAGENT_MESSAGE_KIND_LABEL, subagentMessageDirectionLabel } from './subagent-model';
+import { useSubagentEvents, useSubagentMessages } from './use-subagents';
 
 const EMPTY_APPROVALS = {};
 
@@ -43,21 +45,23 @@ export interface SubagentTimelineProps {
 export function SubagentTimeline({ child, theme }: SubagentTimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
+  const messages = useSubagentMessages(child);
+  const events = useSubagentEvents(child);
 
   const blocks = useMemo(() => {
     const items = groupTimeline({
-      events: child.events,
+      events,
       userMessages: [],
       approvals: EMPTY_APPROVALS,
     });
     return groupTurnBlocks(items);
-  }, [child.events]);
+  }, [events]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element || !pinnedRef.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [blocks]);
+  }, [blocks, messages]);
 
   return (
     <div
@@ -96,6 +100,34 @@ export function SubagentTimeline({ child, theme }: SubagentTimelineProps) {
           <div key={block.key}>{renderBlock(block, theme, child.threadId)}</div>
         ))}
       </div>
+
+      {messages.length > 0 ? (
+        <div
+          data-testid="subagent-messages"
+          aria-label="Messages between the parent and this subagent"
+          className="mt-3 flex flex-col gap-1.5"
+        >
+          <div className="text-2xs font-medium text-muted-foreground">Messages</div>
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              data-testid="subagent-message"
+              data-kind={message.kind}
+              data-direction={message.direction}
+              className="rounded-md border border-border bg-card px-2.5 py-2"
+            >
+              <div className="mb-1 flex items-center gap-1.5 text-2xs text-muted-foreground">
+                <span className="font-medium">{SUBAGENT_MESSAGE_KIND_LABEL[message.kind]}</span>
+                <span>{subagentMessageDirectionLabel(message)}</span>
+              </div>
+              {/* Plain text, whole: a message row is never truncated in the pane. */}
+              <p className="text-xs leading-5 break-words whitespace-pre-wrap text-foreground">
+                {message.text}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {child.summary !== null && child.summary.length > 0 ? (
         <div

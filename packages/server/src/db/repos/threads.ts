@@ -11,6 +11,8 @@ export interface CreateThreadInput {
   modelId: string;
   executionMode: ExecutionMode;
   permissionMode: PermissionMode;
+  /** Per-thread override; null inherits the provider default. */
+  reasoningEffort?: string | null;
   status: ThreadStatus;
   worktreePath: string | null;
   branch: string | null;
@@ -74,7 +76,7 @@ export function createThreadsRepo(db: DatabaseSync): ThreadsRepo {
   );
   const selectOne = db.prepare(`SELECT ${THREAD_COLUMNS} FROM threads WHERE id = ?`);
   const insert = db.prepare(
-    'INSERT INTO threads (id, project_id, parent_thread_id, title, provider_id, model_id, execution_mode, permission_mode, status, worktree_path, branch, base_branch, pr_url, last_seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)',
+    'INSERT INTO threads (id, project_id, parent_thread_id, title, provider_id, model_id, execution_mode, permission_mode, reasoning_effort, status, worktree_path, branch, base_branch, pr_url, last_seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)',
   );
   const updateRow = db.prepare(
     'UPDATE threads SET title = COALESCE(?, title), provider_id = COALESCE(?, provider_id), model_id = COALESCE(?, model_id), reasoning_effort = CASE WHEN ? = 1 THEN ? ELSE reasoning_effort END, execution_mode = COALESCE(?, execution_mode), permission_mode = COALESCE(?, permission_mode), status = COALESCE(?, status), updated_at = ? WHERE id = ?',
@@ -108,6 +110,7 @@ export function createThreadsRepo(db: DatabaseSync): ThreadsRepo {
         input.modelId,
         input.executionMode,
         input.permissionMode,
+        input.reasoningEffort ?? null,
         input.status,
         input.worktreePath,
         input.branch,

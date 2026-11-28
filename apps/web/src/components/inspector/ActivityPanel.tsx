@@ -1,5 +1,5 @@
 import type { SubagentType, ThreadEventRow } from '@tuffcode/contracts';
-import { Badge, cn, EmptyState, IconButton, Input, ScrollArea } from '@tuffcode/ui';
+import { Badge, Button, cn, EmptyState, IconButton, Input, ScrollArea } from '@tuffcode/ui';
 import { Activity, ChevronRight, MessageSquare, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
@@ -97,11 +97,34 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
   const progress = todoProgress(todos);
   const [messaging, setMessaging] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [answering, setAnswering] = useState<string | null>(null);
   const subagents = useAppStore(
     useShallow((state) => subagentsOfThread(state.subagents, threadId)),
   );
+  const questions = useAppStore(
+    useShallow((state) =>
+      Object.values(state.questions).filter((question) => question.threadId === threadId),
+    ),
+  );
   const openSubagent = useAppStore((state) => state.openSubagent);
   const threadStatus = useAppStore((state) => state.threads[threadId]?.status);
+
+  // Seed open questions from the server so a reload still offers the answer box for a
+  // child blocked right now. A question that already arrived by event keeps its copy.
+  useEffect(() => {
+    let disposed = false;
+    void rpc.request('subagents.questions', { threadId }).then(
+      (questions) => {
+        if (!disposed) useAppStore.getState().mergeSubagentQuestions(questions);
+      },
+      // A failed read leaves the live events on screen; the next question event retries.
+      () => undefined,
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [rpc, threadId]);
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
@@ -130,6 +153,7 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
     tools.length === 0 &&
     finished.length === 0 &&
     subagents.length === 0 &&
+    questions.length === 0 &&
     waiting.length === 0 &&
     progress.total === 0 &&
     !councilResolving &&
@@ -153,6 +177,28 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
       await rpc.request('subagents.cancel', { childId });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not stop the subagent.');
+    }
+  }
+
+  /**
+   * Answers a blocked child's question. The main agent may be idle here, so the user
+   * answers directly; the child's turn resumes with this text.
+   */
+  async function answerChild(questionId: string): Promise<void> {
+    const text = (answers[questionId] ?? '').trim();
+    if (text.length === 0) return;
+    setAnswering(questionId);
+    try {
+      await rpc.request('subagents.answer', { threadId, questionId, text });
+      setAnswers((current) => {
+        const next = { ...current };
+        delete next[questionId];
+        return next;
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not answer the subagent.');
+    } finally {
+      setAnswering(null);
     }
   }
 
@@ -265,6 +311,63 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
           </section>
         ) : null}
 
+        {questions.length > 0 ? (
+          <section
+            aria-label="Subagent questions"
+            data-testid="activity-questions"
+            className="flex flex-col gap-1"
+          >
+            <SectionHeading label="Questions" count={questions.length} />
+            {questions.map((question) => (
+              <form
+                key={question.questionId}
+                data-testid="activity-question"
+                data-question-id={question.questionId}
+                className="flex flex-col gap-1 rounded-md border border-border px-1.5 py-1.5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void answerChild(question.questionId);
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => openSubagent(question.childId)}
+                  title="Open the blocked subagent"
+                  className="min-w-0 text-left text-xs text-foreground"
+                >
+                  {question.text}
+                </button>
+                <div className="flex gap-1">
+                  <Input
+                    value={answers[question.questionId] ?? ''}
+                    onChange={(event) =>
+                      setAnswers((current) => ({
+                        ...current,
+                        [question.questionId]: event.target.value,
+                      }))
+                    }
+                    placeholder="Your answer; the child continues with it"
+                    aria-label="Answer for the subagent"
+                    className="h-7 flex-1 text-xs"
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    variant="secondary"
+                    data-testid="activity-question-answer"
+                    disabled={
+                      (answers[question.questionId] ?? '').trim().length === 0 ||
+                      answering === question.questionId
+                    }
+                  >
+                    Answer
+                  </Button>
+                </div>
+              </form>
+            ))}
+          </section>
+        ) : null}
+
         {subagents.length > 0 ? (
           <section aria-label="Subagents" className="flex flex-col gap-0.5">
             <SectionHeading label="Subagents" count={subagents.length} />
@@ -290,6 +393,11 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
                       <Icon aria-hidden="true" strokeWidth={1.75} className="size-3 shrink-0 text-muted-foreground" />
                       <span className="shrink-0">{SUBAGENT_TYPE_LABEL[child.type]}</span>
                       <StatusChip status={SUBAGENT_STATUS_TONE[child.status]} className="h-3.5 px-1" />
+                      {child.closedAt === null ? null : (
+                        <Badge variant="outline" size="sm" data-testid="activity-subagent-closed">
+                          closed
+                        </Badge>
+                      )}
                       <span data-testid="activity-subagent-usage" className="min-w-0 flex-1 truncate text-2xs tabular-nums text-muted-foreground">
                         {usage}
                       </span>
@@ -300,7 +408,7 @@ function ActivityBody({ threadId, council, councilResolving, showPrompt = false 
                         <span className="shrink-0 text-2xs tabular-nums text-muted-foreground">{elapsed}</span>
                       )}
                     </button>
-                    {child.status === 'cancelled' ? null : (
+                    {child.status === 'cancelled' || child.closedAt !== null ? null : (
                       <IconButton
                         icon={MessageSquare}
                         label="Message subagent"

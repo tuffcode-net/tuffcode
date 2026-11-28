@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BASE_SYSTEM_PROMPT,
+  CHILD_BASE_SYSTEM_PROMPT,
   CONFIG_TOOL,
   COUNCIL_PLANNER_PROMPT,
   COUNCIL_REVIEWER_PROMPT,
@@ -12,7 +13,10 @@ import {
   EXTRA_TOOL_SCHEMAS,
   MCP_TOOL,
   MEMORY_TOOL,
+  PLAN_MODE_PROMPT,
   PROJECT_RULES_HEADING,
+  REVIEWER_PROMPT,
+  SUBAGENT_REWORK_LIMIT,
   TOOL_NAMES,
   TOOL_SCHEMAS,
   assemblePrompt,
@@ -28,9 +32,7 @@ const DASHES = /[\u2013\u2014]/;
 
 const COUNCIL_HEADINGS = [
   'TASK',
-  'ROLE',
   'PROJECT',
-  'WORKTREE',
   'GOAL',
   'CONTEXT',
   'CONSTRAINTS',
@@ -39,25 +41,13 @@ const COUNCIL_HEADINGS = [
   'REPORT BACK',
 ];
 
-const REVIEW_POINTS = [
-  'Scope',
-  'Correctness',
-  'Evidence',
-  'Tests',
-  'Secrets',
-  'Validation',
-  'Architecture',
-  'Dead weight',
-  'Criticality',
-];
-
 describe('base system prompt', () => {
   it('fits the token budget', () => {
     const tokens = estimateTokens(BASE_SYSTEM_PROMPT);
     console.log(`base system prompt: ${tokens} tokens (${BASE_SYSTEM_PROMPT.length} chars)`);
     expect(tokens).toBeGreaterThanOrEqual(1500);
-    expect(tokens).toBeLessThanOrEqual(1900);
-    expect(tokens).toBeLessThan(2000);
+    expect(tokens).toBeLessThanOrEqual(2200);
+    expect(tokens).toBeLessThan(2300);
   });
 
   it('is ASCII only', () => {
@@ -65,8 +55,8 @@ describe('base system prompt', () => {
   });
 
   it('scopes reviewer independence to delegated review', () => {
-    expect(BASE_SYSTEM_PROMPT).toContain('use a reviewer on a different model family');
-    expect(BASE_SYSTEM_PROMPT).toContain('Verifying your own change in the same turn is normal');
+    expect(BASE_SYSTEM_PROMPT).toContain('Delegated review runs on a different model family');
+    expect(BASE_SYSTEM_PROMPT).toContain('verifying your own change in the same turn is normal');
     expect(BASE_SYSTEM_PROMPT).toContain('the independence rule applies to delegated review');
   });
 
@@ -86,7 +76,7 @@ describe('base system prompt', () => {
       'one project worktree',
       'Operating loop',
       'Investigation',
-      'Delegation',
+      'Subagents',
       'Memory',
       'Safety',
       'Never edit a file whose relevant context you have not read',
@@ -96,7 +86,6 @@ describe('base system prompt', () => {
       'Untrusted input',
       'SUPPORTED',
       'BLOCKED',
-      'Plan mode',
       'Standing rules',
       'worktree',
       'pwsh.exe',
@@ -111,19 +100,45 @@ describe('base system prompt', () => {
     }
   });
 
-  it('orders the fifteen sections', () => {
+  it('carries the delegation contract and keeps plan mode out of the base', () => {
+    expect(BASE_SYSTEM_PROMPT).not.toContain('# Plan mode');
+    expect(BASE_SYSTEM_PROMPT).toContain('# Subagents');
+    expect(BASE_SYSTEM_PROMPT).toContain('Choose by job:');
+    expect(BASE_SYSTEM_PROMPT).toContain('Each child knows only your brief');
+    expect(BASE_SYSTEM_PROMPT).toContain(
+      `after ${SUBAGENT_REWORK_LIMIT} rounds, stop and bring them to the user.`,
+    );
+
+    expect(PLAN_MODE_PROMPT).toContain('# Plan mode');
+    expect(PLAN_MODE_PROMPT).toContain('You are planning, not building.');
+    expect(PLAN_MODE_PROMPT).toContain('as Markdown under .tuffcode/plans/');
+    expect(PLAN_MODE_PROMPT).toContain(
+      'You are done when a worker with no history could start step 1 from the plan alone.',
+    );
+  });
+
+  it('drops the old plan mode and delegation text', () => {
+    expect(BASE_SYSTEM_PROMPT).not.toContain('# Delegation');
+    expect(BASE_SYSTEM_PROMPT).not.toContain(
+      'In plan mode change nothing: no edits, no writes, no commits.',
+    );
+    expect(BASE_SYSTEM_PROMPT).not.toContain(
+      'A subagent has no conversation history and sees only its task string.',
+    );
+  });
+
+  it('orders the fourteen base sections', () => {
     const headings = [
       '# Operating loop',
       '# Investigation',
       '# Editing',
       '# Verification',
-      '# Delegation',
+      '# Subagents',
       '# Memory',
       '# Communication',
       '# Safety',
       '# Untrusted input',
       '# Claims',
-      '# Plan mode',
       '# Standing rules',
       '# Windows',
       '# Output',
@@ -328,35 +343,39 @@ describe('council prompts', () => {
     }
   });
 
-  it('defines the nine review points and three verdicts', () => {
-    for (const point of REVIEW_POINTS) {
-      expect(COUNCIL_REVIEWER_PROMPT).toContain(point);
-    }
-    for (const verdict of ['pass', 'changes-requested', 'escalate']) {
-      expect(COUNCIL_REVIEWER_PROMPT).toContain(verdict);
-    }
-  });
-
-  it('keeps the planner machine readable', () => {
+  it('fills the council task cap into the planner body', () => {
     expect(COUNCIL_PLANNER_PROMPT).toContain('"tasks"');
     expect(COUNCIL_PLANNER_PROMPT).toContain('"question"');
     expect(COUNCIL_PLANNER_PROMPT).toContain('1 to 12 tasks');
+    expect(COUNCIL_PLANNER_PROMPT).not.toContain('{{');
   });
 
-  it('allows read-only grounding and forbids edits in the planner', () => {
-    expect(COUNCIL_PLANNER_PROMPT).toContain('read-only commands');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('never edit files');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('never open pull requests');
-    expect(COUNCIL_PLANNER_PROMPT).not.toContain('never run commands');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('acceptance check');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('evidence the worker must produce');
+  it('gives the planner one method and one JSON contract', () => {
+    expect(COUNCIL_PLANNER_PROMPT).toContain(
+      'ROLE: Turn one goal into the smallest set of tasks',
+    );
+    expect(COUNCIL_PLANNER_PROMPT).toContain('Confirm every path exists.');
+    expect(COUNCIL_PLANNER_PROMPT).toContain('No two tasks own the same file.');
+    expect(COUNCIL_PLANNER_PROMPT).toContain('"check":"<command>"');
+    expect(COUNCIL_PLANNER_PROMPT.match(/exactly one JSON object/g)).toHaveLength(1);
+    expect(COUNCIL_PLANNER_PROMPT.match(/question form/g)).toHaveLength(1);
   });
 
-  it('requires an exact acceptance command and disjoint files from the planner', () => {
-    expect(COUNCIL_PLANNER_PROMPT).toContain('exact command that proves the task');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('not a phrase like "tests pass"');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('Two tasks must never own the same file');
-    expect(COUNCIL_PLANNER_PROMPT).toContain('they are one task');
+  it('gives the reviewer one three step rubric and three verdicts', () => {
+    expect(COUNCIL_REVIEWER_PROMPT).toBe(REVIEWER_PROMPT);
+    expect(COUNCIL_REVIEWER_PROMPT.match(/^\d\. /gm)).toHaveLength(3);
+    for (const verdict of ['pass', 'changes-requested', 'escalate']) {
+      expect(COUNCIL_REVIEWER_PROMPT).toContain(verdict);
+    }
+    for (const severity of ['blocker', 'major', 'minor']) {
+      expect(COUNCIL_REVIEWER_PROMPT).toContain(severity);
+    }
+    expect(COUNCIL_REVIEWER_PROMPT).not.toContain('nine');
+    expect(COUNCIL_REVIEWER_PROMPT).not.toContain('eleven');
+    expect(COUNCIL_REVIEWER_PROMPT).toContain('DO NOT: fix anything');
+    expect(COUNCIL_REVIEWER_PROMPT).toContain(
+      'the first line is VERDICT: pass | changes-requested | escalate',
+    );
   });
 
   it('requires a verify step and a stop line in the worker brief', () => {
@@ -370,26 +389,10 @@ describe('council prompts', () => {
     );
   });
 
-  it('makes the reviewer check evidence and stay read-only', () => {
-    expect(COUNCIL_REVIEWER_PROMPT).toContain('Author evidence');
-    expect(COUNCIL_REVIEWER_PROMPT).toContain('never edit the files');
-    expect(COUNCIL_REVIEWER_PROMPT).toContain('Read-only');
-  });
-
-  it('defines the canonical finding shape', () => {
-    const findings = COUNCIL_REVIEWER_PROMPT.split('\n').find((line) =>
-      line.startsWith('FINDINGS:'),
-    );
-    expect(findings).toBeDefined();
-    for (const part of [
-      'severity',
-      'file:line',
-      'what is wrong',
-      'what correct looks like',
-      'the check that would catch it',
-    ]) {
-      expect(findings).toContain(part);
-    }
+  it('names council as the only pull request owner', () => {
+    expect(COUNCIL_WORKER_BRIEF_TEMPLATE).not.toContain('gh pr create');
+    expect(COUNCIL_WORKER_BRIEF_TEMPLATE).not.toContain('open the pull request');
+    expect(COUNCIL_WORKER_BRIEF_TEMPLATE).toContain('the open pull request updates itself');
   });
 
   it('stops the worker on a missing worktree, dependency, foreign file, or contradictory brief', () => {
@@ -485,9 +488,16 @@ describe('custom instructions', () => {
     expect(buildCustomInstructions(text)).toBe(text);
   });
 
-  it('caps at 300 tokens and cuts on a sentence boundary', () => {
+  it('keeps a custom prompt at the full 16,000 character UI limit', () => {
+    const text = 'x'.repeat(16_000);
+    const kept = buildCustomInstructions(text);
+    expect(kept).toBe(text);
+    expect(kept?.length).toBe(16_000);
+  });
+
+  it('caps at the token budget and cuts on a sentence boundary', () => {
     const sentence = 'Always run the narrow test before claiming a change works. ';
-    const text = sentence.repeat(60);
+    const text = sentence.repeat(300);
     const capped = buildCustomInstructions(text);
     expect(capped).toBeDefined();
     expect(estimateTokens(capped ?? '')).toBeLessThanOrEqual(CUSTOM_INSTRUCTION_TOKEN_BUDGET);
@@ -496,7 +506,7 @@ describe('custom instructions', () => {
   });
 
   it('falls back to a word boundary when the cap lands inside one long sentence', () => {
-    const capped = buildCustomInstructions(`${'word '.repeat(2400)}end`);
+    const capped = buildCustomInstructions(`${'word '.repeat(4000)}end`);
     expect(estimateTokens(capped ?? '')).toBeLessThanOrEqual(CUSTOM_INSTRUCTION_TOKEN_BUDGET);
     expect(capped?.endsWith('word')).toBe(true);
   });
@@ -543,6 +553,140 @@ describe('assemblePrompt', () => {
     expect(system.indexOf('tests live in packages')).toBeLessThan(system.indexOf('<context>'));
     expect(system).not.toContain('run the tests');
     expect(assembly.total).toBe(assembly.sections.reduce((sum, entry) => sum + entry.tokens, 0));
+  });
+
+  it('keeps the cached prefix identical when the message changes rules and skills', () => {
+    const first = assemblePrompt({
+      projectRules: '- alpha rule',
+      skills: 'alpha skill body',
+      availableSkills: '- alpha: does alpha',
+      turnContext,
+      userMessage: 'first message',
+    });
+    const second = assemblePrompt({
+      projectRules: '- beta rule',
+      skills: 'beta skill body',
+      availableSkills: '- beta: does beta',
+      turnContext,
+      userMessage: 'second message',
+    });
+
+    expect(first.staticPrefix).toBe(second.staticPrefix);
+    expect(first.staticPrefix).not.toContain('alpha rule');
+    expect(first.staticPrefix).not.toContain('alpha skill');
+    expect(first.dynamicPrompt).toContain('alpha rule');
+    expect(second.dynamicPrompt).toContain('beta rule');
+  });
+
+  it('includes unresolved review comments only when there are any', () => {
+    const withComments = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+    expect(withComments.sections.map((entry) => entry.name)).toContain('review-comments');
+    expect(withComments.systemPrompt).toContain('## Review comments');
+    expect(withComments.systemPrompt).toContain('src/a.ts:12');
+
+    const without = assemblePrompt({ turnContext, userMessage: 'fix the review' });
+    expect(without.sections.some((entry) => entry.name === 'review-comments')).toBe(false);
+  });
+
+  it('keeps review comments out of the cached prefix when the project has rules', () => {
+    const assembly = assemblePrompt({
+      projectRules: '- alpha rule',
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
+  it('keeps review comments out of the cached prefix when the project has no rules', () => {
+    const assembly = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
+  it('adds the plan mode rubric only on a plan turn', () => {
+    const work = assemblePrompt({ turnContext, userMessage: 'build it' });
+    expect(work.sections.some((entry) => entry.name === 'plan-mode')).toBe(false);
+    expect(work.systemPrompt).not.toContain('# Plan mode');
+
+    const plan = assemblePrompt({
+      turnContext: { ...turnContext, mode: 'plan' },
+      userMessage: 'plan it',
+    });
+    expect(plan.sections.map((entry) => entry.name)).toEqual([
+      'base',
+      'plan-mode',
+      'turn-context',
+      'user-message',
+    ]);
+    expect(plan.systemPrompt).toContain('# Plan mode');
+    expect(plan.total).toBeGreaterThan(work.total);
+  });
+
+  it('scopes a child prompt: no skills, todo, delegation or approvals', () => {
+    const child = assemblePrompt({
+      role: 'child',
+      customInstructions: 'Prefer pnpm.',
+      projectRules: '- alpha rule',
+      skills: 'alpha skill body',
+      availableSkills: '- alpha: does alpha',
+      turnContext,
+      userMessage: 'TASK\nmap the runner',
+    });
+
+    expect(child.sections.map((entry) => entry.name)).toEqual([
+      'base',
+      'custom-instructions',
+      'project-rules',
+      'turn-context',
+      'user-message',
+    ]);
+    expect(child.sections[0]?.text).toBe(CHILD_BASE_SYSTEM_PROMPT);
+    expect(child.systemPrompt).toContain('## Project rules\n');
+    expect(child.systemPrompt).toContain('- alpha rule');
+    expect(child.systemPrompt).not.toContain('## Available skills');
+    expect(child.systemPrompt).not.toContain('## Skills for this message');
+    expect(child.systemPrompt).not.toContain('alpha skill');
+
+    const base = child.sections[0]?.text ?? '';
+    for (const removed of [
+      '# Task tracking',
+      '# Subagents',
+      'Load a skill',
+      'taskkill',
+      'Keep destructive commands behind explicit approval',
+    ]) {
+      expect(base, removed).not.toContain(removed);
+    }
+    // The headings are the contract: a dropped section cannot quietly return.
+    expect([...base.matchAll(/^# (.+)$/gm)].map((match) => match[1])).toEqual([
+      'Operating loop',
+      'Investigation',
+      'Editing',
+      'Verification',
+      'Memory',
+      'Communication',
+      'Safety',
+      'Untrusted input',
+      'Claims',
+      'Standing rules',
+      'Windows',
+      'Output',
+    ]);
+    expect(estimateTokens(CHILD_BASE_SYSTEM_PROMPT)).toBeLessThan(
+      estimateTokens(BASE_SYSTEM_PROMPT),
+    );
   });
 
   it('omits empty custom instructions and empty brain blocks', () => {
