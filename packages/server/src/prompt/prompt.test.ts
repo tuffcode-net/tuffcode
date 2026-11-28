@@ -13,7 +13,12 @@ import { ALWAYS_TOKEN_BUDGET, RETRIEVAL_TOKEN_BUDGET } from '../brain/selector.j
 import { RpcError } from '../errors.js';
 import { createTestContext, type TestContext } from '../test-support.js';
 import { createPromptHandlers } from './rpc.js';
-import { planPrompt } from './service.js';
+import {
+  REVIEW_COMMENT_CHARS,
+  REVIEW_COMMENT_LIMIT,
+  REVIEW_COMMENT_TOKEN_BUDGET,
+  planPrompt,
+} from './service.js';
 
 const ISO = '2026-11-24T10:00:00.000Z';
 
@@ -254,6 +259,141 @@ describe('prompt planning', () => {
     expect(estimateTokens(body)).toBeLessThanOrEqual(CUSTOM_INSTRUCTION_TOKEN_BUDGET);
     expect(estimateTokens(body)).toBeGreaterThan(CUSTOM_INSTRUCTION_TOKEN_BUDGET - 500);
     expect(body.endsWith('concrete.')).toBe(true);
+  });
+
+  it('includes unresolved review comments and leaves resolved ones out', () => {
+    const ctx = setup();
+    ctx.repos.comments.create({
+      id: 'rc_open',
+      threadId: 'thr_p',
+      filePath: 'src/a.ts',
+      line: 12,
+      side: 'new',
+      body: 'Handle the null case.',
+      createdAt: ISO,
+    });
+    ctx.repos.comments.create({
+      id: 'rc_done',
+      threadId: 'thr_p',
+      filePath: 'src/b.ts',
+      line: 3,
+      side: 'old',
+      body: 'Already fixed.',
+      createdAt: ISO,
+    });
+    ctx.repos.comments.setResolved('rc_done', true);
+
+    const section = preview(ctx, 'fix the review').sections.find(
+      (entry) => entry.name === 'review-comments',
+    );
+
+    expect(section?.text).toContain('src/a.ts:12 (new): Handle the null case.');
+    expect(section?.text).not.toContain('Already fixed.');
+  });
+
+  it('leaves out a comment an earlier turn already carried', () => {
+    const ctx = setup();
+    ctx.repos.comments.create({
+      id: 'rc_sent',
+      threadId: 'thr_p',
+      filePath: 'src/sent.ts',
+      line: 1,
+      side: 'new',
+      body: 'Already sent to the agent.',
+      createdAt: ISO,
+    });
+    ctx.repos.comments.markDelivered(['rc_sent'], ISO);
+    ctx.repos.comments.create({
+      id: 'rc_new',
+      threadId: 'thr_p',
+      filePath: 'src/new.ts',
+      line: 2,
+      side: 'new',
+      body: 'Not sent yet.',
+      createdAt: ISO,
+    });
+
+    const section = preview(ctx, 'fix the review').sections.find(
+      (entry) => entry.name === 'review-comments',
+    );
+
+    expect(section?.text).toContain('src/new.ts:2 (new): Not sent yet.');
+    expect(section?.text).not.toContain('Already sent to the agent.');
+  });
+
+  it('keeps the newest comments and says how many were left out', () => {
+    const ctx = setup();
+    for (let index = 1; index <= REVIEW_COMMENT_LIMIT + 1; index += 1) {
+      ctx.repos.comments.create({
+        id: `rc_${index}`,
+        threadId: 'thr_p',
+        filePath: `src/f${index}.ts`,
+        line: index,
+        side: 'new',
+        body: `body-${index}`,
+        createdAt: ISO,
+      });
+    }
+
+    const section = preview(ctx, 'fix the review').sections.find(
+      (entry) => entry.name === 'review-comments',
+    );
+    const lines = section?.text.split('\n') ?? [];
+    const entries = lines.filter((line) => line.startsWith('- '));
+
+    expect(entries).toHaveLength(REVIEW_COMMENT_LIMIT);
+    // Newest first: the last comment written is the first line, the oldest is dropped.
+    expect(entries[0]).toContain(`src/f${REVIEW_COMMENT_LIMIT + 1}.ts`);
+    expect(entries.at(-1)).toContain('src/f2.ts');
+    expect(section?.text).not.toContain('src/f1.ts');
+    expect(section?.text).toContain('1 more comment omitted');
+  });
+
+  it('truncates a long comment body to the character cap', () => {
+    const ctx = setup();
+    ctx.repos.comments.create({
+      id: 'rc_long',
+      threadId: 'thr_p',
+      filePath: 'src/long.ts',
+      line: 4,
+      side: 'new',
+      body: 'x'.repeat(REVIEW_COMMENT_CHARS + 100),
+      createdAt: ISO,
+    });
+
+    const section = preview(ctx, 'fix the review').sections.find(
+      (entry) => entry.name === 'review-comments',
+    );
+
+    expect(section?.text).toContain(`${'x'.repeat(REVIEW_COMMENT_CHARS - 3)}...`);
+    expect(section?.text).not.toContain('x'.repeat(REVIEW_COMMENT_CHARS + 1));
+  });
+
+  it('holds the review comment section inside its token budget', () => {
+    const ctx = setup();
+    for (let index = 1; index <= 40; index += 1) {
+      ctx.repos.comments.create({
+        id: `rc_big_${index}`,
+        threadId: 'thr_p',
+        filePath: `src/big${index}.ts`,
+        line: index,
+        side: 'new',
+        body: 'y'.repeat(REVIEW_COMMENT_CHARS),
+        createdAt: ISO,
+      });
+    }
+
+    const section = preview(ctx, 'fix the review').sections.find(
+      (entry) => entry.name === 'review-comments',
+    );
+    const entries = (section?.text.split('\n') ?? []).filter((line) => line.startsWith('- '));
+
+    expect(section).toBeDefined();
+    // The heading and instruction add a small fixed cost over the list budget.
+    expect(section?.tokens ?? 0).toBeLessThanOrEqual(REVIEW_COMMENT_TOKEN_BUDGET + 80);
+    expect(entries.length).toBeLessThan(40);
+    expect(entries[0]).toContain('src/big40.ts');
+    expect(section?.text).toMatch(/\d+ more comments? omitted/);
   });
 
   it('omits the custom section when settings hold only whitespace', () => {

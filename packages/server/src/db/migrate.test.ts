@@ -15,12 +15,14 @@ describe('db migrations', () => {
     env = createTempEnv();
     const db = openDb(join(env.root, 'tuffcode.db'));
     try {
-      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
       expect(migrate(db)).toEqual([]);
 
       const versions = db.prepare('SELECT version FROM schema_migrations').all();
-      expect(versions).toHaveLength(16);
-      expect(versions.map((row) => row['version'])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+      expect(versions).toHaveLength(17);
+      expect(versions.map((row) => row['version'])).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      ]);
 
       expect(db.prepare('PRAGMA journal_mode').get()?.['journal_mode']).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1);
@@ -70,6 +72,12 @@ describe('db migrations', () => {
       ]) {
         expect(modelColumns).toContain(column);
       }
+
+      const commentColumns = db
+        .prepare('PRAGMA table_info(review_comments)')
+        .all()
+        .map((row) => row['name']);
+      expect(commentColumns).toContain('delivered_at');
     } finally {
       db.close();
     }
@@ -244,8 +252,18 @@ describe('db migrations', () => {
         now,
         now,
       );
+      insert(
+        'INSERT INTO review_comments (id, thread_id, file_path, line, side, body, resolved, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
+        'rc_old',
+        'thr_old',
+        'src/a.ts',
+        '1',
+        'new',
+        'old comment',
+        now,
+      );
 
-      expect(migrate(db)).toEqual([12, 13, 14, 15, 16]);
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 17]);
       // A second start must be a no-op, not a re-run that fails on an existing column.
       expect(migrate(db)).toEqual([]);
 
@@ -257,6 +275,9 @@ describe('db migrations', () => {
       expect(db.prepare('SELECT content, attachments FROM messages').get()).toEqual({
         content: 'old prompt',
         attachments: null,
+      });
+      expect(db.prepare('SELECT delivered_at FROM review_comments').get()).toEqual({
+        delivered_at: null,
       });
       expect(
         db

@@ -110,7 +110,13 @@ describe('subagentStripChips', () => {
     ]);
 
     expect(SUBAGENT_CHIP_LIMIT).toBe(4);
-    expect(chipIds(chips)).toEqual(['a', 'b', 'c', 'd']);
+    expect(chipIds(chips)).toEqual(['a', 'b', 'd', 'finished']);
+    expect(chips[3]).toEqual({
+      kind: 'finished',
+      count: 1,
+      label: '1 subagent finished',
+      childId: 'c',
+    });
   });
 
   it('keeps the first three running children and folds the rest into a count', () => {
@@ -119,11 +125,18 @@ describe('subagentStripChips', () => {
       child({ childId: 'r2' }),
       child({ childId: 'r3' }),
       child({ childId: 'r4' }),
+      child({ childId: 'r5' }),
       settled('s1'),
     ]);
 
-    expect(chipIds(chips)).toEqual(['r1', 'r2', 'r3', 'more']);
+    expect(chipIds(chips)).toEqual(['r1', 'r2', 'r3', 'more', 'finished']);
     expect(chips[3]).toEqual({ kind: 'more', count: 2, childId: 'r1' });
+    expect(chips[4]).toEqual({
+      kind: 'finished',
+      count: 1,
+      label: '1 subagent finished',
+      childId: 's1',
+    });
   });
 
   it('keeps only the running children when they are the ones that fit', () => {
@@ -136,8 +149,67 @@ describe('subagentStripChips', () => {
       settled('s4'),
     ]);
 
-    expect(chipIds(chips)).toEqual(['r1', 'r2', 'more']);
-    expect(chips[2]).toEqual({ kind: 'more', count: 4, childId: 'r1' });
+    expect(chipIds(chips)).toEqual(['r1', 'r2', 'finished']);
+    expect(chips[2]).toEqual({
+      kind: 'finished',
+      count: 4,
+      label: '4 subagents finished',
+      childId: 's4',
+    });
+  });
+
+  it('keeps a failed child as its own chip beside a running child', () => {
+    const chips = subagentStripChips([
+      child({ childId: 'r' }),
+      child({ childId: 'f', status: 'failed', finishedAt: T0 }),
+    ]);
+
+    expect(chipIds(chips)).toEqual(['r', 'f']);
+    expect(chips.map((chip) => (chip.kind === 'child' ? chip.child.status : chip.kind))).toEqual([
+      'running',
+      'failed',
+    ]);
+  });
+
+  it('keeps a cancelled child distinct from a finished one', () => {
+    const chips = subagentStripChips([
+      child({ childId: 'r' }),
+      settled('d'),
+      child({ childId: 'c', status: 'cancelled', finishedAt: T0 }),
+    ]);
+
+    expect(chipIds(chips)).toEqual(['r', 'c', 'finished']);
+    expect(chips[2]).toEqual({
+      kind: 'finished',
+      count: 1,
+      label: '1 subagent finished',
+      childId: 'd',
+    });
+  });
+
+  it('never folds a failed or cancelled set into a finished chip', () => {
+    const chips = subagentStripChips([
+      child({ childId: 'f', status: 'failed', finishedAt: T0 }),
+      child({ childId: 'c', status: 'cancelled', finishedAt: T0 }),
+    ]);
+
+    expect(chipIds(chips)).toEqual(['f', 'c']);
+  });
+
+  it('folds only the children that finished cleanly', () => {
+    const chips = subagentStripChips([
+      settled('s1'),
+      child({ childId: 'f', status: 'failed', finishedAt: T0 }),
+      settled('s2'),
+    ]);
+
+    expect(chipIds(chips)).toEqual(['f', 'finished']);
+    expect(chips[1]).toEqual({
+      kind: 'finished',
+      count: 2,
+      label: '2 subagents finished',
+      childId: 's2',
+    });
   });
 
   it('folds a settled set into one finished chip on the last child', () => {

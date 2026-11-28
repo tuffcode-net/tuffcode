@@ -230,6 +230,7 @@ const reviewComment: ReviewComment = {
   side: 'new',
   body: 'This branch needs a test.',
   resolved: false,
+  deliveredAt: null,
   createdAt: at,
 };
 

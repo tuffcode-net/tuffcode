@@ -110,8 +110,20 @@ test('spawns a child, shows its card under the spawn turn, and opens the pane', 
     await page.screenshot({ path: join(shots, `${prefix}-pane-narrow.png`) });
   }
 
-  // A second child adds a tab; selecting it switches the pane header and task.
+  // The settled child folds into one finished chip, so the row does not claim
+  // finished work is still running.
+  await expect(strip.getByTestId('subagent-strip-finished')).toHaveText('1 subagent finished');
+
+  // A second child runs while the first is settled. The mixed row must show the
+  // running reviewer chip and the finished summary as two different things.
   await sendMessage(page, 'spawn-subagent-two');
+  const runningChips = strip.getByTestId('subagent-strip-chip');
+  await expect(runningChips).toHaveCount(1);
+  await expect(runningChips).toHaveAttribute('data-subagent-type', 'reviewer');
+  await expect(runningChips).toHaveAttribute('data-status', 'running');
+  await expect(strip.getByTestId('subagent-strip-finished')).toHaveText('1 subagent finished');
+
+  // Two children give two tabs, and selecting one switches the pane header and task.
   const tabs = page.getByTestId('subagent-tabs');
   await expect(tabs).toBeVisible();
   await expect(page.getByTestId('subagent-tab')).toHaveCount(2);
@@ -125,6 +137,19 @@ test('spawns a child, shows its card under the spawn turn, and opens the pane', 
   await expect(reviewerPanel.getByTestId('subagent-task')).toContainText(
     MOCK_SUBAGENT_TWO_TASK,
   );
+
+  // Once the reviewer settles, both children fold into one summary, and the tab row
+  // keeps a tab per child, so a settled child stays reachable and switchable.
+  await expect(strip.getByTestId('subagent-strip-finished')).toHaveText('2 subagents finished', {
+    timeout: 15_000,
+  });
+  await expect(strip.getByTestId('subagent-strip-chip')).toHaveCount(0);
+  await expect(page.getByTestId('subagent-tab')).toHaveCount(2);
+  await tabs.getByRole('tab', { name: /Explorer/ }).click();
+  await expect(header).toContainText('Explorer');
+  await expect(
+    page.getByRole('tabpanel', { name: /Explorer/ }).getByTestId('subagent-task'),
+  ).toContainText(MOCK_SUBAGENT_TASK);
 
   // Closing the pane returns to the strip without losing either child.
   await page.getByTestId('subagent-pane-close').click();
