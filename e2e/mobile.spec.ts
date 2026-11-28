@@ -43,6 +43,8 @@ interface MobileState {
   projectId: string;
   threadId: string;
   baseUrl: string;
+  /** A pre-seeded session cookie, so turn tests do not spend a pairing claim. */
+  session: string;
 }
 
 /** JSON from the server is unknown; the guard names the boundary once. */
@@ -70,6 +72,7 @@ function state(): MobileState {
     projectId: text('projectId'),
     threadId: text('threadId'),
     baseUrl: text('baseUrl'),
+    session: text('session'),
   };
 }
 
@@ -130,6 +133,44 @@ async function pair(page: Page): Promise<void> {
   }
 }
 
+/** Opens the seeded thread by URL, the way a phone opens a saved link. */
+async function openThread(page: Page): Promise<void> {
+  await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
+    waitUntil: 'domcontentloaded',
+  });
+  try {
+    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+      timeout: 20_000,
+    });
+  } catch (error) {
+    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+    throw new Error(
+      'deep link did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
+    );
+  }
+}
+
+/**
+ * Opens the app with the harness's pre-seeded session. The pairing flow itself is
+ * proven by the drive, reused-code and two-device tests; the claim endpoint allows ten
+ * claims a minute per address, so the turn tests must not each spend one.
+ */
+async function openPaired(page: Page): Promise<void> {
+  await page.context().addCookies([
+    {
+      name: 'tuffcode_session',
+      value: state().session,
+      url: base(),
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await page.goto(served('/'), { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 20_000,
+  });
+}
+
 test('serves the shell with a linked, valid manifest', async ({ page }) => {
   await page.goto(served('/'), { waitUntil: 'domcontentloaded' });
   const href = await page.locator('link[rel="manifest"]').getAttribute('href');
@@ -159,19 +200,7 @@ test('pairs a phone, registers the worker and drives a turn', async ({ page }) =
   }
   await page.getByRole('button', { name: 'Show sidebar' }).click();
   await expect(page.getByTestId('thread-row').filter({ hasText: 'Remote chat' }).first()).toBeVisible();
-  await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
-    waitUntil: 'domcontentloaded',
-  });
-  try {
-    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
-      timeout: 20_000,
-    });
-  } catch (error) {
-    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
-    throw new Error(
-      'deep link did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
-    );
-  }
+  await openThread(page);
   const input = page.getByTestId('composer-input');
   await expect(input).toBeEnabled({ timeout: 20_000 });
   await input.fill('Say hello');
@@ -183,20 +212,8 @@ test('pairs a phone, registers the worker and drives a turn', async ({ page }) =
 });
 
 test('stops a running turn from the phone', async ({ page }) => {
-  await pair(page);
-  await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
-    waitUntil: 'domcontentloaded',
-  });
-  try {
-    await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
-      timeout: 20_000,
-    });
-  } catch (error) {
-    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
-    throw new Error(
-      'deep link did not open at ' + page.url() + ' with body: ' + text.slice(0, 400) + ' :: ' + String(error),
-    );
-  }
+  await openPaired(page);
+  await openThread(page);
   const input = page.getByTestId('composer-input');
   await expect(input).toBeEnabled({ timeout: 20_000 });
   await input.fill('SLOW please count');
@@ -208,12 +225,85 @@ test('stops a running turn from the phone', async ({ page }) => {
   await expect(page.getByTestId('composer-send')).toBeVisible({ timeout: 20_000 });
 });
 
+test('shows why a turn failed', async ({ page }) => {
+  await openPaired(page);
+  await openThread(page);
+  const input = page.getByTestId('composer-input');
+  await expect(input).toBeEnabled({ timeout: 20_000 });
+  await input.fill('FAIL-TURN now');
+  await page.getByTestId('composer-send').click();
+  // The provider answers 500, the adapter gives up, and the turn ends with an error
+  // reason instead of a silent spinner. The reason has to reach the phone.
+  await expect(page.getByText('request failed with status 500')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('composer-send')).toBeVisible({ timeout: 20_000 });
+});
+
+test('keeps the turn alive when the phone denies a tool', async ({ page }) => {
+  await openPaired(page);
+  await openThread(page);
+  const input = page.getByTestId('composer-input');
+  await expect(input).toBeEnabled({ timeout: 20_000 });
+  await input.fill('run-bash now');
+  await page.getByTestId('composer-send').click();
+  const card = page.getByTestId('approval-card');
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('approval-deny').click();
+  await expect(card).toContainText('Denied');
+  // The denial becomes a tool result and the turn keeps going, so the next assistant
+  // message arrives and the composer is usable again.
+  await expect(
+    page.getByTestId('assistant-message').filter({ hasText: 'The command was denied.' }).last(),
+  ).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('composer-send')).toBeVisible({ timeout: 20_000 });
+});
+
+test('highlights a code block in a reply on the phone', async ({ page }) => {
+  await openPaired(page);
+  await openThread(page);
+  const input = page.getByTestId('composer-input');
+  await expect(input).toBeEnabled({ timeout: 20_000 });
+  await input.fill('show-code please');
+  await page.getByTestId('composer-send').click();
+  // Shiki renders `pre.shiki`; the plain fallback is a bare `pre`. Its wasm needs
+  // `wasm-unsafe-eval` in the served CSP, so this fails if the policy drops it.
+  await expect(page.locator('pre.shiki')).toBeVisible({ timeout: 30_000 });
+});
+
+test('keeps the app shell when the network is gone', async ({ page, context }) => {
+  await openPaired(page);
+  const secure = await page.evaluate(() => window.isSecureContext);
+  // A plain http LAN address is not a secure context, so no worker can serve the shell
+  // there. The loopback and HTTPS runs are the ones that prove it.
+  test.skip(!secure, 'a plain http LAN origin has no service worker to serve the shell');
+  // Boot registers the worker and the activate step claims it. One controlled load is
+  // what caches the hashed assets; the install step only knows the shell URLs.
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, {
+    timeout: 20_000,
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 20_000,
+  });
+  await context.setOffline(true);
+  try {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    // Offline the bridge cannot answer, so the cached bundle paints the app's own
+    // "server unreachable" state. A browser error page has no such text, so this proves
+    // the shell and its module came from Cache Storage, not from the network.
+    await expect(page.getByText('Could not start the Tuffcode server bridge')).toBeVisible({
+      timeout: 20_000,
+    });
+  } finally {
+    await context.setOffline(false);
+  }
+});
+
 test('reconnects after the network drops', async ({ page, context, browserName }) => {
   // WebKit's offline emulation does not stop traffic on an already open socket, so the
   // heartbeat has nothing to notice there. The missed-probe reset is covered by a fake
   // timer unit test in apps/web/src/rpc/client.test.ts.
   test.skip(browserName !== 'chromium', 'WebKit does not cut an open socket offline');
-  await pair(page);
+  await openPaired(page);
   await context.setOffline(true);
   // The heartbeat notices a silent socket within two intervals.
   await expect
