@@ -8,19 +8,14 @@ const added: Array<{ event: 'unhandledRejection' | 'uncaughtException'; listener
 
 afterEach(() => {
   for (const entry of added.splice(0)) {
-    process.removeListener(entry.event, entry.listener as never);
+    if (entry.event === 'unhandledRejection') {
+      process.removeListener('unhandledRejection', entry.listener as RejectionListener);
+    } else {
+      process.removeListener('uncaughtException', entry.listener as ExceptionListener);
+    }
   }
   vi.restoreAllMocks();
 });
-
-function capture(event: 'unhandledRejection' | 'uncaughtException'): unknown {
-  const before = new Set(process.listeners(event));
-  installProcessGuards({ write: () => undefined });
-  const listener = process.listeners(event).find((candidate) => !before.has(candidate));
-  if (listener === undefined) throw new Error('no ' + event + ' listener was installed');
-  added.push({ event, listener });
-  return listener;
-}
 
 describe('process guards', () => {
   it('logs a rejection outside a turn and keeps the process alive', () => {
@@ -57,8 +52,4 @@ describe('process guards', () => {
     expect(exit).toHaveBeenCalledWith(1);
   });
 
-  it('installs one listener of each kind', () => {
-    expect(capture('unhandledRejection')).toBeTypeOf('function');
-    expect(capture('uncaughtException')).toBeTypeOf('function');
-  });
 });

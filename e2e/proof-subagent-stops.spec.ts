@@ -15,6 +15,7 @@ interface ChildRow {
   threadId: string;
   type: string;
   status: string;
+  task: string;
   summary?: string;
 }
 
