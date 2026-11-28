@@ -148,6 +148,20 @@ describe('adapter factory', () => {
     expect(captured[1]?.provider.secret).toBeNull();
   });
 
+  it('loads the real vendor adapter when no override is supplied', async () => {
+    // Every adapter is behind `await import()`, so this is the test that a subpath
+    // export, a vitest alias and a build chunk all still resolve.
+    const session = await createAdapterForProvider(
+      provider('claude', { pathToClaudeCodeExecutable: 'C:/claude.exe' }),
+      adapterDeps(),
+      null,
+    );
+
+    expect(session.providerId).toBe('prv_a');
+    expect(session.id).toMatch(/^sess_/);
+    expect(typeof session.dispose).toBe('function');
+  });
+
   it('throws AdapterUnavailableError for an unknown kind', async () => {
     const unknown = { ...provider('claude'), kind: 'mystery' } as unknown as ProviderRecord;
     const failure = await createAdapterForProvider(unknown, adapterDeps(), null).catch(

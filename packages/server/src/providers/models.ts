@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { listClaudeModels, type ClaudeModelQueryFn } from '@tuffcode/adapters';
+import type { ClaudeModelQueryFn } from '@tuffcode/adapters';
 import {
   DEFAULT_MODEL_CAPABILITIES,
   ReasoningEffortSchema,
@@ -330,6 +330,7 @@ async function discoverClaude(
       : { models: [], source: 'sdk', error: 'claude CLI not found' };
   }
 
+  const { listClaudeModels } = await import('@tuffcode/adapters/claude');
   const rows = await listClaudeModels({
     pathToClaudeCodeExecutable: cliPath,
     ...(deps.queryFn === undefined ? {} : { queryFn: deps.queryFn }),

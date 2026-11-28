@@ -8,6 +8,21 @@ export default defineConfig({
       '@tuffcode/contracts': fileURLToPath(
         new URL('./packages/contracts/src/index.ts', import.meta.url),
       ),
+      '@tuffcode/adapters/acp': fileURLToPath(
+        new URL('./packages/adapters/src/acp/index.ts', import.meta.url),
+      ),
+      '@tuffcode/adapters/anthropic': fileURLToPath(
+        new URL('./packages/adapters/src/anthropic/index.ts', import.meta.url),
+      ),
+      '@tuffcode/adapters/claude': fileURLToPath(
+        new URL('./packages/adapters/src/claude/index.ts', import.meta.url),
+      ),
+      '@tuffcode/adapters/codex': fileURLToPath(
+        new URL('./packages/adapters/src/codex/index.ts', import.meta.url),
+      ),
+      '@tuffcode/adapters/openai': fileURLToPath(
+        new URL('./packages/adapters/src/openai/index.ts', import.meta.url),
+      ),
       '@tuffcode/adapters': fileURLToPath(
         new URL('./packages/adapters/src/index.ts', import.meta.url),
       ),

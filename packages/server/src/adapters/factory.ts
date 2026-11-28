@@ -1,11 +1,4 @@
-import {
-  createAcpAdapter,
-  createAnthropicAdapter,
-  createClaudeAdapter,
-  createCodexAdapter,
-  createOpenAIChatAdapter,
-  type OpenAIChatAdapterOverrides,
-} from '@tuffcode/adapters';
+import type { OpenAIChatAdapterOverrides } from '@tuffcode/adapters';
 import {
   AdapterUnavailableError,
   type AdapterDeps,
@@ -139,29 +132,46 @@ export async function createAdapterForProvider(
     secret,
   };
   const factories = overrides.factories ?? {};
-  const openai: AdapterFactory = (config, adapterDeps) =>
-    createOpenAIChatAdapter(
+  // Each vendor adapter is imported on first use. The Claude Agent SDK and the ACP
+  // SDK together are about half of the server bundle, and a thread that never runs a
+  // Claude, Codex or ACP provider never needs them: keeping them out of the entry
+  // module is what lets the server answer /health without parsing them.
+  const openai: AdapterFactory = async (config, adapterDeps) => {
+    const { createOpenAIChatAdapter } = await import('@tuffcode/adapters/openai');
+    return createOpenAIChatAdapter(
       config,
       adapterDeps,
       overrides.fetchFn === undefined ? {} : { fetchFn: overrides.fetchFn },
     );
+  };
 
   switch (provider.kind) {
     case 'claude':
-      return (factories.claude ?? createClaudeAdapter)(descriptor, deps);
+      return (
+        factories.claude ?? (await import('@tuffcode/adapters/claude')).createClaudeAdapter
+      )(descriptor, deps);
     case 'codex':
-      return (factories.codex ?? createCodexAdapter)(descriptor, deps);
-    case 'acp':
-      return (factories.acp ?? createAcpAdapter)(descriptor, deps);
-    case 'opencode':
-      return (factories.opencode ?? factories.acp ?? createAcpAdapter)(
-        { ...descriptor, config: opencodeConfig(descriptor.config) },
+      return (factories.codex ?? (await import('@tuffcode/adapters/codex')).createCodexAdapter)(
+        descriptor,
         deps,
       );
+    case 'acp':
+      return (factories.acp ?? (await import('@tuffcode/adapters/acp')).createAcpAdapter)(
+        descriptor,
+        deps,
+      );
+    case 'opencode':
+      return (
+        factories.opencode ??
+        factories.acp ??
+        (await import('@tuffcode/adapters/acp')).createAcpAdapter
+      )({ ...descriptor, config: opencodeConfig(descriptor.config) }, deps);
     case 'openai-compatible':
       return (factories['openai-compatible'] ?? openai)(descriptor, deps);
     case 'anthropic':
-      return (factories.anthropic ?? createAnthropicAdapter)(descriptor, deps);
+      return (
+        factories.anthropic ?? (await import('@tuffcode/adapters/anthropic')).createAnthropicAdapter
+      )(descriptor, deps);
     default:
       throw new AdapterUnavailableError(
         provider.id,

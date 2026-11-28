@@ -38,6 +38,10 @@ export default defineConfig({
     build: {
       outDir: resolve(webRoot, 'dist'),
       emptyOutDir: true,
+      // electron-vite defaults the renderer to minify: false. Shipping readable
+      // source costs 1.4 MB in the initial chunk and the parse time that goes
+      // with it, so the renderer build minifies like any other production bundle.
+      minify: true,
       rolldownOptions: {
         input: resolve(webRoot, 'index.html'),
       },

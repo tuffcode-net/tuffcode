@@ -318,18 +318,24 @@ async function bootstrapApplication(): Promise<void> {
   app.setAppUserModelId('net.tuffcode.app');
 
   registerIpcHandlers();
+
+  // The utility process boots slower than the window (it parses the server bundle,
+  // opens the database and runs the migrations), so it starts first and the window is
+  // built while it boots. startServerProcess never rejects: it reports a failure by
+  // returning null, which the await below turns into the usual error dialog.
+  const starting = startServerProcess();
+
   const window = createWindow(readPersistedTheme(dbPath()));
   mainWindow = window;
   createApplicationMenu(window);
 
-  const secretStore = createSecretStore();
-  const running = await startServerProcess();
+  const running = await starting;
   if (running === null) {
     app.quit();
     return;
   }
   server = running;
-  attachSecretBridge(running.child, secretStore, logger);
+  attachSecretBridge(running.child, createSecretStore(), logger);
 
   const info = readBootstrap(running.port);
   if (info === null) {
