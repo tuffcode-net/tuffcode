@@ -577,6 +577,43 @@ describe('assemblePrompt', () => {
     expect(second.dynamicPrompt).toContain('beta rule');
   });
 
+  it('includes unresolved review comments only when there are any', () => {
+    const withComments = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+    expect(withComments.sections.map((entry) => entry.name)).toContain('review-comments');
+    expect(withComments.systemPrompt).toContain('## Review comments');
+    expect(withComments.systemPrompt).toContain('src/a.ts:12');
+
+    const without = assemblePrompt({ turnContext, userMessage: 'fix the review' });
+    expect(without.sections.some((entry) => entry.name === 'review-comments')).toBe(false);
+  });
+
+  it('keeps review comments out of the cached prefix when the project has rules', () => {
+    const assembly = assemblePrompt({
+      projectRules: '- alpha rule',
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
+  it('keeps review comments out of the cached prefix when the project has no rules', () => {
+    const assembly = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
   it('adds the plan mode rubric only on a plan turn', () => {
     const work = assemblePrompt({ turnContext, userMessage: 'build it' });
     expect(work.sections.some((entry) => entry.name === 'plan-mode')).toBe(false);

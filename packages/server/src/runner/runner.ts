@@ -98,6 +98,8 @@ interface TurnState {
   persisted: boolean;
   settled: boolean;
   cancelled: boolean;
+  /** Review comments this turn's prompt carried, stamped delivered on a complete turn. */
+  reviewCommentIds?: readonly string[];
 }
 
 /**
@@ -459,6 +461,19 @@ export function createRunner(deps: RunnerDeps): Runner {
     denyPending(thread.id);
     setThreadStatus(thread, reason === 'error' ? 'failed' : 'ready-to-review');
     appendEvent(thread.id, { type: 'turn.finished', turnId, reason });
+    // The comments this prompt carried stop repeating only once the model has answered.
+    // A failed or interrupted turn leaves them unsent, so the next turn still has them.
+    if (reason === 'complete' && state?.reviewCommentIds !== undefined) {
+      try {
+        repos.comments.markDelivered(state.reviewCommentIds, nowIso());
+      } catch (error) {
+        logger.warn('review comment delivery failed', {
+          threadId: thread.id,
+          turnId,
+          reason: errorMessage(error),
+        });
+      }
+    }
   }
 
   function requestApproval(
@@ -647,7 +662,7 @@ export function createRunner(deps: RunnerDeps): Runner {
       const now = new Date(createdAt);
       const settings = deps.settings();
       const limits = threadLimits(repos, thread, settings);
-      const { assembly, brain } = planPrompt(repos, {
+      const { assembly, brain, reviewCommentIds } = planPrompt(repos, {
         thread,
         project,
         message: text,
@@ -812,7 +827,13 @@ export function createRunner(deps: RunnerDeps): Runner {
       }
       active.set(thread.id, { session, turnId, controller, adapterKey });
       setThreadStatus(thread, 'running');
-      const state: TurnState = { text: '', persisted: false, settled: false, cancelled: false };
+      const state: TurnState = {
+        text: '',
+        persisted: false,
+        settled: false,
+        cancelled: false,
+        reviewCommentIds,
+      };
       turnState.set(turnId, state);
       void runTurn(
         thread,

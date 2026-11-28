@@ -37,6 +37,8 @@ export interface PromptPlan {
   brain: BrainAssembly;
   /** `$name` mentions that matched no skill, so the caller can warn once. */
   unknownSkills: string[];
+  /** Comments this prompt carried; the runner stamps them delivered after a complete turn. */
+  reviewCommentIds: string[];
 }
 
 interface SkillPlan {
@@ -97,6 +99,54 @@ function planSkills(
   }
 }
 
+/** Inline comments the agent has not been told about yet, bounded for the prompt. */
+export const REVIEW_COMMENT_LIMIT = 100;
+export const REVIEW_COMMENT_CHARS = 500;
+/** Tokens the rendered list may take; the heading and instruction add a few more. */
+export const REVIEW_COMMENT_TOKEN_BUDGET = 2000;
+
+interface RenderedReviewComments {
+  text: string;
+  /** Ids of the comments that made it into `text`, for the delivery stamp. */
+  ids: string[];
+}
+
+/**
+ * Newest first, because the comments the user just wrote are the ones that matter.
+ * Comments a previous turn already carried are skipped; they stay open, so the panel
+ * can show them as sent rather than resolved. Past the count or token budget the list
+ * says how many were left out instead of dropping them silently.
+ */
+function renderReviewComments(repos: Repos, threadId: string): RenderedReviewComments {
+  const open = repos.comments
+    .list(threadId)
+    .filter((comment) => !comment.resolved && comment.deliveredAt === null)
+    .reverse();
+  const kept: { id: string; line: string }[] = [];
+  for (const comment of open.slice(0, REVIEW_COMMENT_LIMIT)) {
+    const body = comment.body.replace(/\s+/g, ' ').trim();
+    const clipped =
+      body.length <= REVIEW_COMMENT_CHARS ? body : `${body.slice(0, REVIEW_COMMENT_CHARS - 3)}...`;
+    kept.push({
+      id: comment.id,
+      line: `- ${comment.filePath}:${comment.line} (${comment.side}): ${clipped}`,
+    });
+  }
+  let omitted = open.length - kept.length;
+  const render = (): string => {
+    const lines = kept.map((entry) => entry.line);
+    if (omitted > 0) {
+      lines.push(`... ${omitted} more comment${omitted === 1 ? '' : 's'} omitted`);
+    }
+    return lines.join('\n');
+  };
+  while (kept.length > 0 && estimateTokens(render()) > REVIEW_COMMENT_TOKEN_BUDGET) {
+    kept.pop();
+    omitted += 1;
+  }
+  return { text: render(), ids: kept.map((entry) => entry.id) };
+}
+
 export function planPrompt(repos: Repos, input: PromptPlanInput): PromptPlan {
   const { thread, project, message, settings } = input;
   const now = input.now ?? new Date();
@@ -110,9 +160,11 @@ export function planPrompt(repos: Repos, input: PromptPlanInput): PromptPlan {
 
   const skillPlan = planSkills(repos, project.path, message, settings);
   const projectRules = loadProjectRules(project.path, message);
+  const reviewComments = renderReviewComments(repos, thread.id);
   const assembly = assemblePrompt({
     customInstructions: settings.customInstructions,
     projectRules: projectRules.text,
+    reviewComments: reviewComments.text,
     profile: settings.profile,
     responseStyle: settings.responseStyle,
     skills: skillPlan.skills,
@@ -129,5 +181,5 @@ export function planPrompt(repos: Repos, input: PromptPlanInput): PromptPlan {
     userMessage: message,
   });
 
-  return { assembly, brain, unknownSkills: skillPlan.unknown };
+  return { assembly, brain, unknownSkills: skillPlan.unknown, reviewCommentIds: reviewComments.ids };
 }

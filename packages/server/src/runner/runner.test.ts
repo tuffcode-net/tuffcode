@@ -375,6 +375,46 @@ describe('thread runner', () => {
     expect(messages[1]?.content).toBe('hello world');
   });
 
+  it('stamps a review comment delivered only when the turn completes', async () => {
+    const f = setup();
+    f.ctx.repos.comments.create({
+      id: 'rc_runner',
+      threadId: 'thr_a',
+      filePath: 'src/a.ts',
+      line: 1,
+      side: 'new',
+      body: 'fix the null case',
+      createdAt: ISO,
+    });
+    const ended = waitForTurnEnd(f.bus);
+    const { turnId } = await f.runner.send('thr_a', 'hello');
+
+    expect(f.ctx.repos.comments.get('rc_runner')?.deliveredAt).toBeNull();
+    f.adapter.push({ type: 'turn.finished', turnId, reason: 'complete' });
+    await ended;
+
+    expect(f.ctx.repos.comments.get('rc_runner')?.deliveredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('leaves a review comment unsent when the turn fails', async () => {
+    const f = setup();
+    f.ctx.repos.comments.create({
+      id: 'rc_runner',
+      threadId: 'thr_a',
+      filePath: 'src/a.ts',
+      line: 1,
+      side: 'new',
+      body: 'fix the null case',
+      createdAt: ISO,
+    });
+    const ended = waitForTurnEnd(f.bus);
+    await f.runner.send('thr_a', 'hello');
+    f.adapter.fail('socket closed');
+    await ended;
+
+    expect(f.ctx.repos.comments.get('rc_runner')?.deliveredAt).toBeNull();
+  });
+
   it('persists exactly one user row per turn and one assistant row when it completes', async () => {
     const f = setup();
     const ended = waitForTurnEnd(f.bus);
