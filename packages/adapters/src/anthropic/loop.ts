@@ -412,6 +412,17 @@ export async function* runTurn(options: RunTurnOptions): AsyncIterable<AdapterEv
           reason = 'error';
           break;
         }
+        // A reply cut by max_tokens is a failed turn, not a finished one: the model
+        // never chose to stop, so the user must see why the answer ends mid-thought.
+        if (stopReason === 'max_tokens') {
+          yield {
+            type: 'error',
+            message: 'anthropic: the reply hit the output token limit and was cut off',
+            retryable: false,
+          };
+          reason = 'error';
+          break;
+        }
         if (mapStopReason(stopReason) === 'error') {
           yield {
             type: 'error',

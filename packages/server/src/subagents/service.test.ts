@@ -650,6 +650,43 @@ describe('subagent service', () => {
     }
   });
 
+  it('cancels every live child of a parent thread', async () => {
+    const harness = createHarness();
+    try {
+      harness.ports.block = true;
+      const first = await spawn(harness, 'explorer');
+      const second = await spawn(harness, 'worker');
+      await until(() => harness.ports.turns.length === 2);
+      await harness.subagents.cancelAll(PARENT_ID);
+      expect((await harness.subagents.awaitChild(first)).status).toBe('cancelled');
+      expect((await harness.subagents.awaitChild(second)).status).toBe('cancelled');
+      // A deleted parent thread must leave no live child behind.
+      expect(
+        harness.ctx.repos.subagents
+          .listByThread(PARENT_ID)
+          .every((record) => record.status === 'cancelled'),
+      ).toBe(true);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('keeps a reason on a child cancelled while its turn ran', async () => {
+    const harness = createHarness();
+    try {
+      harness.ports.block = true;
+      const childId = await spawn(harness, 'explorer');
+      await until(() => harness.ports.turns.length === 1);
+      await harness.subagents.cancel(childId);
+      const view = await harness.subagents.awaitChild(childId);
+      expect(view.status).toBe('cancelled');
+      // An aborted turn can return no text; the stop reason must still be stored.
+      expect((view.summary ?? '').length).toBeGreaterThan(0);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it('cancels a running child and interrupts its session', async () => {
     const harness = createHarness();
     try {

@@ -123,6 +123,12 @@ export interface Subagents {
   get(childId: string): SubagentView;
   /** Cancels a queued child or interrupts a running one; settled children are a no-op. */
   cancel(childId: string): Promise<void>;
+  /**
+   * Cancels every queued or running child of one parent thread. The thread delete calls
+   * this first, so a removed parent never leaves a live child writing to rows the delete
+   * removes.
+   */
+  cancelAll(threadId: string): Promise<void>;
   list(threadId: string): SubagentView[];
   /** Every child across threads, so the sidebar maps child thread ids without per-parent calls. */
   listAll(): SubagentView[];

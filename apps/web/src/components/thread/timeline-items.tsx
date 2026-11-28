@@ -263,6 +263,24 @@ export function UserBubble({
   );
 }
 
+/**
+ * Assistant prose links leave the app. Only web links are handed over: the desktop
+ * bridge opens the system browser, and in the browser build (no bridge) the link opens
+ * a tab. Every other scheme, and every relative path, stays a dead click, which keeps
+ * `file:`, `javascript:` and custom handlers away from the OS.
+ */
+const EXTERNAL_LINK = /^https?:\/\//i;
+
+export function openExternalLink(href: string): void {
+  if (!EXTERNAL_LINK.test(href)) return;
+  const bridge = typeof window === 'undefined' ? undefined : window.tuffcode;
+  if (bridge !== undefined && typeof bridge.openExternal === 'function') {
+    bridge.openExternal(href);
+    return;
+  }
+  if (typeof window !== 'undefined') window.open(href, '_blank', 'noreferrer');
+}
+
 /** Context the model wrote before reaching for a tool: smaller and narrower. */
 export function ProseText({ block, theme }: { block: ProseBlock; theme: MarkdownTheme }) {
   return (
@@ -270,7 +288,7 @@ export function ProseText({ block, theme }: { block: ProseBlock; theme: Markdown
       data-testid="assistant-prose"
       className="max-w-[72ch] px-1 text-[13.5px] leading-[1.65] text-foreground [&_p]:my-2 [&_p]:leading-[1.65] [&_p:first-child]:mt-0 [&_p:last-child]:mb-0"
     >
-      <Markdown content={block.text} theme={theme} />
+      <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
       {block.streaming ? <StreamingCaret /> : null}
     </div>
   );
@@ -346,7 +364,7 @@ export function FinalAnswer({ block, theme, threadId, onRetry, onEdit }: FinalAn
         data-testid="assistant-message"
         className="max-w-[var(--chat-content-max-width)] px-1 text-sm leading-6 text-foreground"
       >
-        <Markdown content={block.text} theme={theme} />
+        <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
         {block.streaming ? <StreamingCaret /> : null}
       </div>
 
