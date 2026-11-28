@@ -92,7 +92,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   await expect(threadLeaf.getByTestId('pane-tab')).toHaveCount(2);
   await threadLeaf
     .getByTestId('pane-tab')
-    .filter({ hasText: 'Diff' })
+    .filter({ hasText: 'Changes' })
     .dragTo(threadLeaf.getByTestId('pane-drop-zone-bottom'), { force: true, steps: 8 });
 
   await expect(leaves).toHaveCount(3);
@@ -175,7 +175,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   await expect(relaunched).toHaveAttribute('data-narrow', 'true');
   await expect(reloaded).toHaveCount(1);
   await expect(session.page.getByTestId('pane-tab')).toHaveCount(3);
-  await expect(session.page.getByTestId('pane-tab').filter({ hasText: 'Diff' })).toBeVisible();
+  await expect(session.page.getByTestId('pane-tab').filter({ hasText: 'Changes' })).toBeVisible();
   if (shots) {
     await session.page.screenshot({ path: join(shots, `${prefix}-narrow.png`) });
   }
