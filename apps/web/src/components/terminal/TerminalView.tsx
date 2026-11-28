@@ -1,5 +1,5 @@
-import { Terminal, type TerminalHandle } from '@tuffcode/ui';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Terminal, paletteFor, paletteToXterm, type TerminalHandle } from '@tuffcode/ui';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RpcClient } from '../../rpc/client';
 import { useAppStore } from '../../store/app-store';
 import { TERMINAL_MENU, type ActionContext } from '../actions';
@@ -28,6 +28,8 @@ export function TerminalView({ terminalId, rpc, active, onReopen }: TerminalView
   const scrollback = useAppStore((state) => state.settings?.terminalScrollback);
   const fontSize = useAppStore((state) => state.settings?.terminalFontSize);
   const cursorStyle = useAppStore((state) => state.settings?.cursorStyle);
+  const themeId = useAppStore((state) => state.settings?.theme);
+  const terminalTheme = useMemo(() => paletteToXterm(paletteFor(themeId)), [themeId]);
 
   useEffect(() => {
     return subscribeTerminalData(rpc, terminalId, (data) => handleRef.current?.write(data));
@@ -101,6 +103,7 @@ export function TerminalView({ terminalId, rpc, active, onReopen }: TerminalView
         fontSize={fontSize}
         scrollback={scrollback}
         cursorStyle={cursorStyle}
+        theme={terminalTheme}
         onData={sendInput}
         onResize={sendResize}
         className="p-1.5"

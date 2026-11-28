@@ -3,6 +3,7 @@ import './styles/theme.css';
 // oxlint-disable-next-line import/no-unassigned-import -- appearance variables and panel motion
 import './styles/appearance.css';
 import { RouterProvider } from '@tanstack/react-router';
+import { themeBase } from '@tuffcode/contracts';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Toaster, toast } from 'sonner';
@@ -23,6 +24,14 @@ import { useAppStore } from './store/app-store';
 const container = document.getElementById('root');
 if (!container) throw new Error('Missing #root element.');
 const root = createRoot(container);
+
+/** Toasts follow the app palette, not the OS, so they match the window around them. */
+function ThemedToaster() {
+  const theme = useAppStore((state) => state.settings?.theme);
+  return (
+    <Toaster theme={themeBase(theme ?? 'dark')} position="bottom-right" closeButton />
+  );
+}
 
 function wireClient(client: RpcClient): void {
   client.onStatus((status) => {
@@ -119,7 +128,7 @@ async function boot(): Promise<void> {
     <StrictMode>
       <RpcProvider client={client}>
         <RouterProvider router={router} />
-        <Toaster theme="system" position="bottom-right" closeButton />
+        <ThemedToaster />
       </RpcProvider>
     </StrictMode>,
   );

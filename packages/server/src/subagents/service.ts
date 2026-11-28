@@ -863,7 +863,10 @@ export function createSubagents(deps: SubagentDeps): Subagents {
           return;
         }
         if (run.cancelled) {
-          finish(childId, 'cancelled', result.text);
+          // An aborted turn often returns no text. A cancelled child must still carry a
+          // reason the parent and the UI can show, so fall back to the stop reason.
+          const stopped = result.text.trim();
+          finish(childId, 'cancelled', stopped.length > 0 ? stopped : 'cancelled by the parent');
           return;
         }
         if (result.status !== 'complete') {
@@ -1450,6 +1453,18 @@ export function createSubagents(deps: SubagentDeps): Subagents {
         await deps.runner.interrupt(run.childThreadId).catch(() => undefined);
       }
       finish(childId, 'cancelled', 'cancelled by the parent');
+    },
+
+    async cancelAll(threadId) {
+      for (const record of repos.subagents.listByThread(threadId)) {
+        if (record.status !== 'queued' && record.status !== 'running') continue;
+        await api.cancel(record.childId).catch((error: unknown) => {
+          logger.warn('child not cancelled with its parent thread', {
+            childId: record.childId,
+            reason: errorMessage(error),
+          });
+        });
+      }
     },
 
     list(threadId) {

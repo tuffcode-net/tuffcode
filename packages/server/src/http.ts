@@ -202,7 +202,8 @@ export function buildContentSecurityPolicy(origin: string | undefined): string {
   }
   return [
     "default-src 'self'",
-    "script-src 'self'",
+    // Shiki compiles its oniguruma WASM for code block highlighting.
+    "script-src 'self' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",

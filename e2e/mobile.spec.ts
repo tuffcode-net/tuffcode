@@ -17,6 +17,11 @@ interface WsClient {
   on(event: 'message', listener: (data: unknown) => void): void;
   once(event: 'open', listener: () => void): void;
   once(event: 'error', listener: (error: unknown) => void): void;
+  once(
+    event: 'unexpected-response',
+    listener: (request: unknown, response: { statusCode?: number }) => void,
+  ): void;
+  once(event: 'close', listener: (code: number) => void): void;
   off(event: 'message', listener: (data: unknown) => void): void;
   send(data: string): void;
   close(): void;
@@ -235,8 +240,23 @@ test('disabling remote access cuts every paired device', async ({ browser }) => 
 
     const socket = desktopSocket();
     await new Promise<void>((ready, fail) => {
-      socket.once('open', () => ready());
-      socket.once('error', fail);
+      const timer = setTimeout(() => fail(new Error('the desktop socket did not open')), 10_000);
+      socket.once('open', () => {
+        clearTimeout(timer);
+        ready();
+      });
+      socket.once('error', (error) => {
+        clearTimeout(timer);
+        fail(error);
+      });
+      socket.once('unexpected-response', (_request, response) => {
+        clearTimeout(timer);
+        fail(new Error('upgrade answered HTTP ' + String(response.statusCode)));
+      });
+      socket.once('close', (code) => {
+        clearTimeout(timer);
+        fail(new Error('socket closed before open with code ' + code));
+      });
     });
     const request = (id: string, method: string, params: unknown): Promise<Record<string, unknown>> => {
       const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();

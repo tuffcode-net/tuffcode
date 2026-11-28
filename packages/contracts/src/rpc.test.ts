@@ -1682,6 +1682,7 @@ describe('settings', () => {
   it('parses partial patches without filling defaults', () => {
     expect(SettingsPatchSchema.parse({})).toEqual({});
     expect(SettingsPatchSchema.parse({ theme: 'light' })).toEqual({ theme: 'light' });
+    expect(SettingsPatchSchema.parse({ theme: 'nord' })).toEqual({ theme: 'nord' });
     expect(SettingsPatchSchema.parse({ fontSize: 16, cursorStyle: 'block' })).toEqual({
       fontSize: 16,
       cursorStyle: 'block',

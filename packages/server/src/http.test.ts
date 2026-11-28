@@ -459,6 +459,7 @@ describe('http surface', () => {
   it('builds a CSP that names the websocket origin', () => {
     const csp = buildContentSecurityPolicy('http://192.168.1.20:4310');
     expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).toContain('connect-src \'self\' ws://192.168.1.20:4310 http://192.168.1.20:4310');
     expect(csp).toContain("object-src 'none'");
     expect(buildContentSecurityPolicy(undefined)).not.toContain('ws://');

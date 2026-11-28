@@ -28,11 +28,13 @@ import { createDiagnosticsHandlers } from './diagnostics.js';
 import { RpcError } from './errors.js';
 import type { EventBus } from './events.js';
 import {
+  assertGitHubCli,
   commitThread,
   createCheckpoint,
   getDiff,
   listCheckpoints,
   openPullRequest,
+  preparePullRequest,
   pushThread,
   revertCheckpoint,
 } from './git/index.js';
@@ -157,6 +159,13 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
   });
   define('threads.search', ({ query, limit }) => searchThreads(deps.repos, query, limit));
   define('threads.delete', async ({ id, removeWorktree }) => {
+    // A deleted parent must not leave a live child: stop every queued or running child
+    // first, then remove the child thread rows, which the parent's ON DELETE SET NULL
+    // would otherwise turn into top-level conversations with live worktrees.
+    await deps.subagents?.cancelAll(id);
+    for (const child of deps.repos.subagents.listByThread(id)) {
+      if (child.childThreadId !== null) deps.repos.threads.remove(child.childThreadId);
+    }
     await deps.runner.disposeThread(id);
     await deleteThread(deps.repos, id, removeWorktree ?? false);
     return {};
@@ -202,6 +211,10 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
   define('git.commit', ({ threadId, message }) => commitThread(deps.repos, threadId, message));
   define('git.push', ({ threadId }) => pushThread(deps.repos, threadId));
   define('git.pr', async ({ threadId, title, body, draft }) => {
+    // gh is checked before preparePullRequest, so a missing or signed-out CLI fails
+    // without first committing and pushing work the user did not expect to leave.
+    await assertGitHubCli(deps.repos, threadId);
+    await preparePullRequest(deps.repos, threadId, title);
     const result = await openPullRequest(deps.repos, threadId, { title, body, draft });
     deps.repos.threads.setPrUrl(threadId, result.url);
     emitThread(getThread(deps.repos, threadId));

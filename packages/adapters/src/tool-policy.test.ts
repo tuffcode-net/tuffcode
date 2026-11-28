@@ -136,6 +136,16 @@ describe('tool profile', () => {
     expect(profileAllows('bash', { command: 'ls' }, noBash, 'C:/wt').allowed).toBe(false);
   });
 
+  it('names the tools a child may use when one is refused', () => {
+    const verdict = profileAllows('config', { action: 'settings.set' }, explorer, 'C:/wt');
+    expect(verdict.allowed).toBe(false);
+    const reason = verdict.allowed === false ? verdict.reason : '';
+    expect(reason).toContain('is not offered to this agent; it may use:');
+    expect(reason).toContain('read');
+    expect(reason).toContain('bash');
+    expect(reason.split('it may use: ')[1] ?? '').not.toContain('config');
+  });
+
   it('names the actions a child may use and refuses the rest', () => {
     const spawn = profileAllows('subagent', { action: 'spawn' }, explorer, 'C:/wt');
     expect(spawn.allowed).toBe(false);

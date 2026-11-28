@@ -17,12 +17,22 @@ export const MOCK_FILE_CONTENT = 'added by the mock provider';
 export const MOCK_THINKING = 'The project is small, so a quick scan is enough.';
 export const MOCK_PROSE = 'I will inspect the project before editing it.';
 export const MOCK_TIMELINE_FINAL = 'The project looks healthy and ready for changes.';
+export const MOCK_CODE_REPLY = 'Here is the constant:\n\n```ts\nconst answer = 42;\n```\n';
 export const MOCK_TIMELINE_FILE = 'timeline-added.txt';
 export const MOCK_TIMELINE_FILE_CONTENT = 'alpha\nbeta';
 export const MOCK_SUBAGENT_TASK = 'map the project structure';
 export const MOCK_SUBAGENT_FINAL = 'Spawned an explorer to map the project.';
 /** The held marker lets a spec read the strip while this child is still running. */
 export const MOCK_SUBAGENT_HOLD = 'subagent-hold';
+/** Task markers that drive one child into a terminal state the proof spec reads. */
+export const MOCK_SUBAGENT_CANCEL = 'subagent-cancel';
+export const MOCK_SUBAGENT_FAIL = 'subagent-fail';
+export const MOCK_SUBAGENT_CUT = 'subagent-cut';
+export const MOCK_SUBAGENT_TRIO_TASKS = {
+  explorer: 'map the project structure ' + MOCK_SUBAGENT_CANCEL,
+  worker: 'implement the change ' + MOCK_SUBAGENT_FAIL,
+  reviewer: 'review the change ' + MOCK_SUBAGENT_CUT,
+};
 export const MOCK_SUBAGENT_TWO_TASK = 'review the project ' + MOCK_SUBAGENT_HOLD;
 const MOCK_SUBAGENT_HOLD_MS = 4000;
 /** The planner answer: two tasks, disjoint files, one dependency edge. */
@@ -262,16 +272,37 @@ async function handleChat(
     return;
   }
 
+  const messages = messagesOf(body);
+  const prompt = lastRole(messages, 'user');
+  recordPrompt(prompt);
+  recordBody(body as Record<string, unknown>);
+
+  // A child whose provider call fails answers before any SSE headers go out.
+  if (prompt.includes(MOCK_SUBAGENT_FAIL)) {
+    response.writeHead(500, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'mock provider failure' } }));
+    return;
+  }
+
   response.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
   });
 
-  const messages = messagesOf(body);
-  const prompt = lastRole(messages, 'user');
-  recordPrompt(prompt);
-  recordBody(body as Record<string, unknown>);
+  // A child that must stay running until the spec cancels it.
+  if (prompt.includes(MOCK_SUBAGENT_CANCEL)) {
+    await delay(60_000);
+    await streamText(response, MOCK_TEXT);
+    response.end();
+    return;
+  }
+  // A reply cut off mid-stream: one partial SSE frame, then the socket closes.
+  if (prompt.includes(MOCK_SUBAGENT_CUT)) {
+    response.write('data: {"choices":[{"delta":{"content":"half an ans');
+    response.end();
+    return;
+  }
   // Council mode asks its planner for one JSON object; the plan is the whole answer.
   if (prompt.includes(PLANNER_MARKER) && prompt.includes(PLANNER_BASE_MARKER)) {
     await streamText(response, JSON.stringify(MOCK_COUNCIL_PLAN));
@@ -363,6 +394,28 @@ async function handleChat(
     return;
   }
 
+  if (prompt.includes('spawn-subagent-trio')) {
+    finishWithToolCalls(response, [
+      {
+        id: 'call_e2e_trio_explorer',
+        name: 'subagent',
+        args: { type: 'explorer', task: MOCK_SUBAGENT_TRIO_TASKS.explorer },
+      },
+      {
+        id: 'call_e2e_trio_worker',
+        name: 'subagent',
+        args: { type: 'worker', task: MOCK_SUBAGENT_TRIO_TASKS.worker },
+      },
+      {
+        id: 'call_e2e_trio_reviewer',
+        name: 'subagent',
+        args: { type: 'reviewer', task: MOCK_SUBAGENT_TRIO_TASKS.reviewer },
+      },
+    ]);
+    response.end();
+    return;
+  }
+
   if (prompt.includes('spawn-subagent-two')) {
     finishWithToolCalls(response, [
       {
@@ -420,6 +473,12 @@ async function handleChat(
       path: MOCK_FILE_PATH,
       content: MOCK_FILE_CONTENT,
     });
+    response.end();
+    return;
+  }
+
+  if (prompt.includes('show-code')) {
+    await streamText(response, MOCK_CODE_REPLY);
     response.end();
     return;
   }

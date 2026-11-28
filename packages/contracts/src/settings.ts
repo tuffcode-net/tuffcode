@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { PermissionModeSchema, ReasoningEffortSchema, type GoalAutonomy } from './entities.js';
 import { DEFAULT_REMOTE_SETTINGS, RemoteSettingsSchema } from './remote.js';
+import { THEME_IDS, type ThemeId } from './themes.js';
 
-export const ThemeSchema = z.enum(['dark', 'light']);
-export type Theme = z.infer<typeof ThemeSchema>;
+export const ThemeSchema = z.enum(THEME_IDS);
+export type Theme = ThemeId;
 
 export const LogLevelSchema = z.enum(['debug', 'info', 'warn', 'error']);
 export type LogLevel = z.infer<typeof LogLevelSchema>;
