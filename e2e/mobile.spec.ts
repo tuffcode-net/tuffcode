@@ -30,7 +30,8 @@ interface WsClient {
 function desktopSocket(): WsClient {
   const load = createRequire(join(process.cwd(), 'packages/server/package.json'));
   const ws = load('ws') as { WebSocket: new (url: string, protocols: string[]) => WsClient };
-  return new ws.WebSocket('ws://127.0.0.1:' + state().remotePort + '/ws', [
+  // The desktop talks to its own loopback listener; the remote one is what gets closed.
+  return new ws.WebSocket('ws://127.0.0.1:' + state().port + '/ws', [
     'tuffcode.bearer.' + state().token,
   ]);
 }
@@ -259,13 +260,18 @@ test('disabling remote access cuts every paired device', async ({ browser }) => 
       });
     });
     const request = (id: string, method: string, params: unknown): Promise<Record<string, unknown>> => {
-      const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
+      const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
       const onMessage = (data: unknown): void => {
         const frame = JSON.parse(String(data)) as { id?: string };
         if (frame.id !== id) return;
+        clearTimeout(timer);
         socket.off('message', onMessage);
         resolve(frame as Record<string, unknown>);
       };
+      const timer = setTimeout(() => {
+        socket.off('message', onMessage);
+        reject(new Error('no reply to ' + method));
+      }, 5_000);
       socket.on('message', onMessage);
       socket.send(JSON.stringify({ id, method, params }));
       return promise;

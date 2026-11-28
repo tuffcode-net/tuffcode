@@ -50,13 +50,9 @@ export function useSettingsDraft<K extends SettingsKey>(
   useEffect(() => {
     // Re-seed on a server change only when the draft has no local edits: a per-key
     // save (the theme picker) must not discard the section's other unsaved fields.
-<<<<<<< HEAD
-    if (settings && !dirty) setDraft(pickSettings(settings, keys));
-=======
     if (settings !== null && shouldReseedDraft(draft, settings, keys)) {
       setDraft(pickSettings(settings, keys));
     }
->>>>>>> origin/main
     // `keys` is a module constant; the signature tracks its contents.
   }, [settings, signature, dirty]); // oxlint-disable-line react-hooks/exhaustive-deps
 
