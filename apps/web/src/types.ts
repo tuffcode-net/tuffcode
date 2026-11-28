@@ -35,7 +35,7 @@ export interface TuffcodeBridge {
   getBootstrap(): Promise<BootstrapInfo>;
   pickFolder(): Promise<string | null>;
   onMenuAction(callback: (action: string) => void): () => void;
-  setTheme(theme: 'dark' | 'light' | 'system'): void;
+  setTheme(kind: 'dark' | 'light'): void;
   /** Absent when the preload predates the updater, so callers must guard. */
   checkForUpdates?(): Promise<UpdateCheckOutcome>;
   /** Round 4 additions; absent in a browser test harness, so callers must guard. */

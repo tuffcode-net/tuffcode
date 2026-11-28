@@ -86,6 +86,23 @@ export function isSettingsDraftDirty<K extends SettingsKey>(
  * changed keys keeps two sections editing different fields from overwriting each
  * other with stale values.
  */
+/**
+ * Whether a server settings change may replace a section's draft.
+ *
+ * A section that saves one key on click (the theme picker) still has other unsaved
+ * fields in its draft; reseeding on every event would silently discard them. So a draft
+ * with local edits keeps them, and a clean or missing draft follows the server.
+ */
+export function shouldReseedDraft<K extends SettingsKey>(
+  draft: Pick<Settings, K> | null,
+  settings: Settings | null,
+  keys: readonly K[],
+): boolean {
+  if (settings === null) return false;
+  if (draft === null) return true;
+  return !isSettingsDraftDirty(draft, settings, keys);
+}
+
 export function buildSettingsPatch<K extends SettingsKey>(
   draft: Pick<Settings, K>,
   settings: Settings,

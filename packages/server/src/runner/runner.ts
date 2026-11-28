@@ -1,5 +1,7 @@
 import {
   AdapterUnavailableError,
+  MAX_ATTACHMENT_BASE64_CHARS,
+  MAX_SEND_BASE64_CHARS,
   type AdapterEvent,
   type AdapterSession,
   type ApprovalChoice,
@@ -12,12 +14,7 @@ import {
 } from '@tuffcode/contracts';
 import { SUBAGENT_TOOL_PROFILES } from '@tuffcode/prompt';
 import { newId, resolveWithin, type Logger } from '@tuffcode/shared';
-import {
-  MAX_ATTACHMENT_BASE64_CHARS,
-  MAX_SEND_BASE64_CHARS,
-  persistAttachments,
-  readStoredAttachment,
-} from '../attachments/store.js';
+import { persistAttachments, readStoredAttachment } from '../attachments/store.js';
 import { captureStandingRules } from '../brain/rules.js';
 import { threadLimits, threadVision, type ModelLimits } from '../context/limits.js';
 import { measureContext } from '../context/service.js';

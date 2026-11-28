@@ -22,6 +22,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
+import { useAppStore } from '../../store/app-store';
 import { DIFF_LINE_MENU, type ActionContext } from '../actions';
 import { useActionPorts } from '../menu/action-context';
 import { useMenu } from '../menu/Menu';
@@ -74,6 +75,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
   const rpc = useRpc();
   const menu = useMenu();
   const ports = useActionPorts();
+  const theme = useAppStore((state) => state.settings?.theme);
 
   const [checkpointId, setCheckpointId] = useState<string | null>(null);
   const [savingCheckpoint, setSavingCheckpoint] = useState(false);
@@ -486,6 +488,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             >
               <DiffViewer
                 className="[&>div]:min-h-20"
+                theme={theme}
                 hideFileHeader
                 overflow="scroll"
                 files={[{ path: selectedFile.path, patch: selectedFile.patch }]}

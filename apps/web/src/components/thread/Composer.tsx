@@ -46,6 +46,7 @@ import { requestInspectorTab } from '../inspector/panel-requests';
 import { ModelMenu } from '../models/ModelMenu';
 import { useProviderModels } from '../models/use-provider-models';
 import { draftFor, rememberDraft, takePendingDraft } from './composer-drafts';
+import { attachmentBudget } from './attachment-budget';
 import {
   attachmentFromFile,
   attachmentFromFolder,
@@ -176,6 +177,8 @@ export function Composer({ thread }: ComposerProps) {
     return provider?.config.capabilities?.vision !== true;
   }, [attachments, providerModels.models, providers, thread?.modelId, thread?.providerId]);
   const council = useCouncilGoal(councilMode ? thread?.id : undefined);
+  // The files the server will drop, named while they are still removable chips.
+  const omittedAttachments = useMemo(() => attachmentBudget(attachments).omitted, [attachments]);
   const summary = useMemo(
     () => (council.status === null ? null : councilSummary(council.status)),
     [council.status],
@@ -737,6 +740,17 @@ export function Composer({ thread }: ComposerProps) {
                 >
                   This model cannot view images. They are sent as file names, so describe the
                   screenshot in your message.
+                </p>
+              ) : null}
+
+              {omittedAttachments.length > 0 ? (
+                <p
+                  data-testid="composer-attachment-budget"
+                  className="truncate px-1 pb-1 text-2xs text-warning-foreground"
+                  title={omittedAttachments.join(', ')}
+                >
+                  The model will not see {omittedAttachments.join(', ')}: this message is over the
+                  attachment budget. Remove them or send fewer images.
                 </p>
               ) : null}
 
