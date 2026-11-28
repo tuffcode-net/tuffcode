@@ -5,7 +5,6 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  PERMISSION_LABEL,
   Select,
   type SelectOption,
 } from '@tuffcode/ui';
@@ -30,26 +29,26 @@ interface ModeExample {
 const MODE_EXAMPLES: readonly ModeExample[] = [
   {
     value: 'read-only',
-    label: PERMISSION_LABEL['read-only'],
+    label: 'Read only',
     summary:
       'Reads, searches and read-only commands run. Anything that writes, fetches, or runs an arbitrary program is refused.',
     example: 'Read a file or run git log: runs. Run the test suite: refused without asking.',
   },
   {
     value: 'ask',
-    label: PERMISSION_LABEL.ask,
+    label: 'Ask before edits',
     summary: 'Every tool call waits for you, including reads.',
     example: 'Read a file: asks. Edit a file: asks.',
   },
   {
     value: 'accept-edits',
-    label: PERMISSION_LABEL['accept-edits'],
+    label: 'Accept edits',
     summary: 'Reads and file edits run. Shell commands and everything else wait for you.',
     example: 'Edit a file: runs. Run the test suite: asks.',
   },
   {
     value: 'full-auto',
-    label: PERMISSION_LABEL['full-auto'],
+    label: 'Full auto',
     summary: 'Every tool call runs without a prompt; a run ends on Stop, an abort, context compaction, or a repeated identical tool call.',
     example: 'Run the test suite: runs. Commit the change: runs.',
   },

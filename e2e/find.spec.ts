@@ -2,7 +2,6 @@ import { expect, test } from './fixtures';
 import {
   addMockProvider,
   addProjectThroughUi,
-  clickNewThread,
   closeDock,
   confirmNewThreadDialog,
   createThreadThroughSidebar,
@@ -122,7 +121,7 @@ test('Ctrl+F opens in the clicked pane, not the routed thread', async ({
   const routedThreadId = await page
     .locator('[data-testid="thread-row"][aria-current="page"]')
     .getAttribute('data-thread-id');
-  await clickNewThread(page);
+  await page.getByTestId('sidebar-new-thread').click();
   await confirmNewThreadDialog(page);
   await expect(page.getByTestId('thread-title')).toBeVisible();
   await expect(page.getByTestId('thread-row')).toHaveCount(2);

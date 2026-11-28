@@ -256,36 +256,6 @@ describe('prompt planning', () => {
     expect(body.endsWith('concrete.')).toBe(true);
   });
 
-  it('includes unresolved review comments and leaves resolved ones out', () => {
-    const ctx = setup();
-    ctx.repos.comments.create({
-      id: 'rc_open',
-      threadId: 'thr_p',
-      filePath: 'src/a.ts',
-      line: 12,
-      side: 'new',
-      body: 'Handle the null case.',
-      createdAt: ISO,
-    });
-    ctx.repos.comments.create({
-      id: 'rc_done',
-      threadId: 'thr_p',
-      filePath: 'src/b.ts',
-      line: 3,
-      side: 'old',
-      body: 'Already fixed.',
-      createdAt: ISO,
-    });
-    ctx.repos.comments.setResolved('rc_done', true);
-
-    const section = preview(ctx, 'fix the review').sections.find(
-      (entry) => entry.name === 'review-comments',
-    );
-
-    expect(section?.text).toContain('src/a.ts:12 (new): Handle the null case.');
-    expect(section?.text).not.toContain('Already fixed.');
-  });
-
   it('omits the custom section when settings hold only whitespace', () => {
     const ctx = setup();
     ctx.repos.settings.patch({ customInstructions: '   \n  ' });

@@ -1,4 +1,4 @@
-import { Button, PERMISSION_LABEL, cn } from '@tuffcode/ui';
+import { Button, cn } from '@tuffcode/ui';
 import { ChevronRight, FolderGit2, GitBranch, HardDrive, ShieldCheck, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
@@ -17,6 +17,13 @@ import { ContextPanel } from './ContextPanel';
 
 /** One hue per prompt segment, cycling through the status palette. */
 const SEGMENT_TONES = ['bg-info', 'bg-warning', 'bg-success', 'bg-primary', 'bg-error', 'bg-muted-foreground'] as const;
+
+const PERMISSION_LABEL = {
+  'read-only': 'Read only',
+  ask: 'Ask first',
+  'accept-edits': 'Accept edits',
+  'full-auto': 'Full auto',
+} as const;
 
 function useContextUsage(threadId: string): ContextUsage | null {
   const rpc = useRpc();
@@ -79,7 +86,7 @@ export function ActivityContext({ threadId, showPrompt }: { threadId: string; sh
     setCompacting(true);
     try {
       await rpc.request('threads.send', { id: threadId, text: '/compact' });
-      toast('Compacting the conversation.');
+      toast.success('Compacting the conversation.');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not compact the conversation.');
     } finally {

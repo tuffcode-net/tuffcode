@@ -27,7 +27,6 @@ export { commitThread, pushThread } from './commit.js';
 export {
   openPullRequest,
   parsePullRequestUrl,
-  preparePullRequest,
   type PullRequestInput,
   type PullRequestResult,
 } from './pr.js';

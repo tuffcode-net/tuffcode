@@ -1,4 +1,3 @@
-import type { ThemeId } from '@tuffcode/contracts';
 import { PatchDiff } from '@pierre/diffs/react';
 import { MessageSquarePlus } from 'lucide-react';
 import {
@@ -9,7 +8,6 @@ import {
 } from 'react';
 import { cn } from './cn';
 import { EmptyState } from './empty-state';
-import { paletteFor } from './themes/palettes';
 
 export interface DiffFile {
   path: string;
@@ -37,7 +35,7 @@ export interface DiffViewerProps {
   onLineContextMenu?: (line: DiffLineContext, point: { x: number; y: number }) => void;
   /** Suppresses the per-file header when the caller already shows one. */
   hideFileHeader?: boolean;
-  theme?: ThemeId;
+  theme?: 'dark' | 'light';
   diffStyle?: 'unified' | 'split';
   /**
    * `scroll` keeps one rendered row per source line and scrolls long lines
@@ -113,7 +111,7 @@ interface DiffFileViewProps {
   onLineComment?: (comment: DiffLineComment) => void;
   onLineContextMenu?: (line: DiffLineContext, point: { x: number; y: number }) => void;
   hideFileHeader: boolean;
-  theme: ThemeId;
+  theme: 'dark' | 'light';
   diffStyle: 'unified' | 'split';
   overflow: 'scroll' | 'wrap';
 }
@@ -177,8 +175,7 @@ function DiffFileView({
       <PatchDiff
         patch={file.patch}
         options={{
-          theme: paletteFor(theme).syntax,
-          themeType: paletteFor(theme).base,
+          themeType: theme,
           diffStyle,
           overflow,
           lineDiffType: 'word-alt',

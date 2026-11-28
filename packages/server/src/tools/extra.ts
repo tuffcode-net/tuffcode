@@ -31,11 +31,13 @@ export type ExtraToolRunner = (
 /** Settings the agent may change through the `config` tool, D48. */
 export const SETTINGS_ALLOWLIST = [
   'theme',
+  'defaultPermissionMode',
   'maxOutputTokens',
   'autoCompact',
   'brainEnabled',
   'subagentModels',
   'subagentConcurrency',
+  'enabledTools',
   'capabilities',
   'brainCapture',
   'responseStyle',

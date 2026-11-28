@@ -1,20 +1,15 @@
-import {
-  Children,
-  isValidElement,
-  useEffect,
-  useMemo,
-  useState,
-  type AnchorHTMLAttributes,
-  type ReactNode,
-} from 'react';
+import { Children, isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { ThemeId } from '@tuffcode/contracts';
-import type { BundledLanguage, Highlighter, ShikiTransformer } from 'shiki';
+import type { BundledLanguage, BundledTheme, Highlighter, ShikiTransformer } from 'shiki';
 import { cn } from './cn';
-import { paletteFor } from './themes/palettes';
 
-export type MarkdownTheme = ThemeId;
+export type MarkdownTheme = 'dark' | 'light';
+
+const THEME: Record<MarkdownTheme, BundledTheme> = {
+  dark: 'github-dark-default',
+  light: 'github-light-default',
+};
 
 /**
  * Shiki paints its own page background on the `<pre>`; the design system wants
@@ -32,7 +27,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 /** Lazily load one Shiki highlighter for the whole renderer. */
 function getHighlighter(): Promise<Highlighter> {
   highlighterPromise ??= import('shiki').then((shiki) =>
-    shiki.createHighlighter({ themes: ['github-dark-default', 'github-light-default'], langs: [] }),
+    shiki.createHighlighter({ themes: [THEME.dark, THEME.light], langs: [] }),
   );
   return highlighterPromise;
 }
@@ -44,16 +39,12 @@ async function highlightCode(
 ): Promise<string | null> {
   try {
     const highlighter = await getHighlighter();
-    const syntax = paletteFor(theme).syntax;
-    if (!highlighter.getLoadedThemes().includes(syntax)) {
-      await highlighter.loadTheme(syntax);
-    }
     if (!highlighter.getLoadedLanguages().includes(lang)) {
       await highlighter.loadLanguage(lang as BundledLanguage);
     }
     return highlighter.codeToHtml(code, {
       lang,
-      theme: syntax,
+      theme: THEME[theme],
       transformers: [stripBackground],
     });
   } catch {
@@ -118,43 +109,14 @@ function textOf(node: ReactNode): string {
     .join('');
 }
 
-/**
- * Anchor props for one rendered markdown link. With a click hook the host owns the
- * navigation (the desktop bridge opens the system browser), so the anchor must not
- * open a second window; without one the browser keeps its usual new-tab behavior.
- */
-export function linkProps(
-  href: string | undefined,
-  className: string | undefined,
-  onLinkClick: ((href: string) => void) | undefined,
-): AnchorHTMLAttributes<HTMLAnchorElement> {
-  const merged = cn('text-info-foreground underline underline-offset-2 hover:text-info', className);
-  if (onLinkClick === undefined) {
-    return { href, className: merged, rel: 'noreferrer', target: '_blank' };
-  }
-  return {
-    href,
-    className: merged,
-    onClick: (event) => {
-      event.preventDefault();
-      if (href !== undefined) onLinkClick(href);
-    },
-  };
-}
-
 export interface MarkdownProps {
   /** Markdown source. Raw HTML is never rendered. */
   content: string;
   theme?: MarkdownTheme;
   className?: string;
-  /**
-   * Hands link clicks to the host instead of the browser. The desktop shell opens
-   * web links in the system browser and refuses every other scheme.
-   */
-  onLinkClick?: (href: string) => void;
 }
 
-export function Markdown({ content, theme = 'dark', className, onLinkClick }: MarkdownProps) {
+export function Markdown({ content, theme = 'dark', className }: MarkdownProps) {
   const components = useMemo<Components>(
     () => ({
       h1: ({ className: cls, ...props }) => (
@@ -178,10 +140,13 @@ export function Markdown({ content, theme = 'dark', className, onLinkClick }: Ma
       p: ({ className: cls, ...props }) => (
         <p className={cn('my-3 leading-6 first:mt-0 last:mb-0', cls)} {...withoutNode(props)} />
       ),
-      a: ({ className: cls, href, children, ...props }) => (
-        <a {...linkProps(href, cls, onLinkClick)} {...withoutNode(props)}>
-          {children}
-        </a>
+      a: ({ className: cls, ...props }) => (
+        <a
+          className={cn('text-info-foreground underline underline-offset-2 hover:text-info', cls)}
+          rel="noreferrer"
+          target="_blank"
+          {...withoutNode(props)}
+        />
       ),
       ul: ({ className: cls, ...props }) => (
         <ul className={cn('my-3 ml-5 list-disc space-y-1', cls)} {...withoutNode(props)} />
@@ -251,7 +216,7 @@ export function Markdown({ content, theme = 'dark', className, onLinkClick }: Ma
         />
       ),
     }),
-    [theme, onLinkClick],
+    [theme],
   );
 
   return (

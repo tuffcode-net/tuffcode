@@ -3,8 +3,6 @@ import type { LocalUserMessage } from './grouping';
 import {
   addLocalUserMessage,
   failLocalUserMessage,
-  hiddenMessageIds,
-  hideLocalUserMessage,
   localUserMessages,
   pruneResolvedLocalUserMessages,
   resolveLocalUserMessage,
@@ -106,15 +104,6 @@ describe('local message status', () => {
     expect(updateLocalUserMessageText(message.id, 'Edited text')).toBe(true);
     expect(localUserMessages(message.threadId)[0]?.text).toBe('Edited text');
     expect(updateLocalUserMessageText('msg_turn-1_user', 'nope')).toBe(false);
-  });
-
-  it('remembers a hidden message for the rest of the session', () => {
-    const threadId = 'thread-hide';
-    hideLocalUserMessage(threadId, 'msg_turn-9_user');
-
-    expect(hiddenMessageIds(threadId).has('msg_turn-9_user')).toBe(true);
-    // A transcript refetch replaces the store rows; the hidden id survives.
-    expect(hiddenMessageIds(threadId).has('msg_turn-9_user')).toBe(true);
   });
 
   it('records superseded turns with a new snapshot for subscribers', () => {

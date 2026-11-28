@@ -27,7 +27,7 @@ export type PaneSurface = FixedPaneSurface | `thread:${string}`;
 
 export const PANE_SURFACE_LABEL: Record<FixedPaneSurface, string> = {
   thread: 'Thread',
-  diff: 'Changes',
+  diff: 'Diff',
   files: 'Files',
   terminal: 'Terminal',
   browser: 'Browser',

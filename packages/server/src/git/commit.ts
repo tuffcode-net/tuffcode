@@ -2,7 +2,7 @@ import type { Repos } from '../db/repos/index.js';
 import { badRequest, conflict, RpcError } from '../errors.js';
 import { requireWorktree } from './context.js';
 import { currentBranch } from './worktree.js';
-import { GitError, runGit } from './runGit.js';
+import { runGit } from './runGit.js';
 
 const PROTECTED_BRANCHES: Readonly<Record<string, true>> = { main: true, master: true };
 
@@ -39,18 +39,6 @@ export async function pushThread(
   const { thread, worktreePath } = requireWorktree(repos, threadId);
   const branch = (await currentBranch(worktreePath)) ?? thread.branch;
   if (branch === null) throw conflict('thread is not on a branch');
-  try {
-    await runGit(['push', '-u', 'origin', branch], worktreePath);
-  } catch (error) {
-    if (error instanceof GitError) {
-      const detail = error.stderr
-        .trim()
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .pop();
-      throw new RpcError('bad-request', detail === undefined ? 'git push failed' : `git push failed: ${detail}`);
-    }
-    throw error;
-  }
+  await runGit(['push', '-u', 'origin', branch], worktreePath);
   return { branch, remote: 'origin' };
 }

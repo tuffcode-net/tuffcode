@@ -68,8 +68,7 @@ export interface TuffcodeBridge {
   /** The filesystem path behind a picked or dropped File; Electron 32 removed `File.path`. */
   getPathForFile(file: File): string;
   onMenuAction(callback: (action: string) => void): () => void;
-  /** Applies a named palette id; `kind` is the base scheme for the native chrome. */
-  setTheme(theme: string, kind: 'dark' | 'light'): void;
+  setTheme(theme: Theme): void;
   checkForUpdates(): Promise<UpdateCheckOutcome>;
   notify(request: NotifyRequest): void;
   notifyTest(request: NotifyRequest): Promise<NotifyTestResult>;

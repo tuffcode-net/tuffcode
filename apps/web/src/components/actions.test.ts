@@ -297,14 +297,14 @@ describe('message actions', () => {
     ]);
   });
 
-  it('hides a message from this session in both stores', async () => {
+  it('removes a deleted message from both stores', async () => {
     const item = userItem('msg_delete_user');
     const h = harness({ threadId: THREAD.id, userMessage: item });
 
     await runAction('message.delete', h.context);
 
     expect(h.store.removeMessage).toHaveBeenCalledWith(THREAD.id, item.messageId);
-    expect(h.notify.success).toHaveBeenCalledWith('Hidden from this session');
+    expect(h.notify.success).toHaveBeenCalledWith('Message deleted');
   });
 });
 

@@ -76,23 +76,14 @@ export async function confirmNewThreadDialog(
   await expect(dialog).toBeHidden();
 }
 
-/**
- * Clicks the hover-revealed New thread button. The project row must be hovered first,
- * because the button is pointer-events-none until the row is hovered or focused.
- */
-export async function clickNewThread(page: Page): Promise<void> {
-  await page.getByTestId('project-toggle').first().hover();
-  const button = page.getByTestId('sidebar-new-thread');
-  await expect(button).toBeEnabled();
-  await button.click();
-}
-
 /** Clicks New thread, confirms the dialog, and waits for the thread view to mount. */
 export async function createThreadThroughSidebar(
   page: Page,
   options: { workspace?: 'folder' | 'worktree' } = {},
 ): Promise<string> {
-  await clickNewThread(page);
+  const button = page.getByTestId('sidebar-new-thread');
+  await expect(button).toBeEnabled();
+  await button.click();
   await confirmNewThreadDialog(page, options);
   const title = page.getByTestId('thread-title');
   await expect(title).toBeVisible();

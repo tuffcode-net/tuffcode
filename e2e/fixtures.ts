@@ -61,10 +61,6 @@ export function createWorkspace(): E2EWorkspace {
   writeFileSync(join(projectPath, 'src', 'index.ts'), 'export const answer = 42;\n');
   git(['add', '.']);
   git(['commit', '-m', 'initial commit']);
-  // A bare origin so the commit/push and Create PR paths can run end to end.
-  const origin = join(root, 'origin.git');
-  execFileSync('git', ['init', '--bare', origin], { stdio: 'ignore' });
-  git(['remote', 'add', 'origin', origin]);
 
   return { root, home, localAppData, appData, userData, projectPath };
 }

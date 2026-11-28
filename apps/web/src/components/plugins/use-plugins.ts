@@ -14,7 +14,7 @@ export interface PluginsState {
   refresh(): void;
   install(entry: CatalogEntry): Promise<void>;
   setEnabled(plugin: InstalledPlugin, enabled: boolean): Promise<void>;
-  remove(plugin: InstalledPlugin): Promise<boolean>;
+  remove(plugin: InstalledPlugin): Promise<void>;
   upload(path: string): Promise<void>;
   addMarketplace(url: string): Promise<boolean>;
 }
@@ -67,13 +67,10 @@ export function usePlugins(): PluginsState {
     void load(false);
   }, [load]);
 
-  const track = useCallback(async function track<T>(
-    key: string,
-    run: () => Promise<T>,
-  ): Promise<T> {
+  const track = useCallback(async (key: string, run: () => Promise<void>) => {
     setBusy((current) => new Set(current).add(key));
     try {
-      return await run();
+      await run();
     } finally {
       setBusy((current) => {
         const next = new Set(current);
@@ -119,10 +116,8 @@ export function usePlugins(): PluginsState {
           await rpc.request('plugins.remove', { id: plugin.id });
           if (plugin.marketplaceId !== null) markInstalled(`${plugin.marketplaceId}/${plugin.name}`, false);
           toast.success(`${plugin.displayName} removed.`);
-          return true;
         } catch (error) {
           toast.error(message(error, 'Could not remove the plugin.'));
-          return false;
         }
       }),
     upload: (path) =>

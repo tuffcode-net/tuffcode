@@ -4,7 +4,6 @@ import { expect, test } from './fixtures';
 import {
   addMockProvider,
   addProjectThroughUi,
-  clickNewThread,
   closeDock,
   confirmNewThreadDialog,
   createThreadThroughSidebar,
@@ -38,7 +37,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   const selectedRow = page.locator('[data-testid="thread-row"][aria-current="page"]');
   const firstThreadId = await selectedRow.getAttribute('data-thread-id');
   // A second thread gives the sidebar a row to drag into a tile.
-  await clickNewThread(page);
+  await page.getByTestId('sidebar-new-thread').click();
   await confirmNewThreadDialog(page);
   await expect(page.getByTestId('thread-title')).toBeVisible();
   await expect(page.getByTestId('thread-row')).toHaveCount(2);
@@ -92,7 +91,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   await expect(threadLeaf.getByTestId('pane-tab')).toHaveCount(2);
   await threadLeaf
     .getByTestId('pane-tab')
-    .filter({ hasText: 'Changes' })
+    .filter({ hasText: 'Diff' })
     .dragTo(threadLeaf.getByTestId('pane-drop-zone-bottom'), { force: true, steps: 8 });
 
   await expect(leaves).toHaveCount(3);
@@ -175,7 +174,7 @@ test('splits with drop zones into a 2x2, resizes, persists, and opens a side cha
   await expect(relaunched).toHaveAttribute('data-narrow', 'true');
   await expect(reloaded).toHaveCount(1);
   await expect(session.page.getByTestId('pane-tab')).toHaveCount(3);
-  await expect(session.page.getByTestId('pane-tab').filter({ hasText: 'Changes' })).toBeVisible();
+  await expect(session.page.getByTestId('pane-tab').filter({ hasText: 'Diff' })).toBeVisible();
   if (shots) {
     await session.page.screenshot({ path: join(shots, `${prefix}-narrow.png`) });
   }

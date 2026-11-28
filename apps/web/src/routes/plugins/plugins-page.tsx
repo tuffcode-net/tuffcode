@@ -216,7 +216,8 @@ export function PluginsPage() {
           onClose={() => setSelection(null)}
           onInstall={(entry) => void plugins.install(entry)}
           onRemove={async (plugin) => {
-            if (await plugins.remove(plugin)) setSelection(null);
+            await plugins.remove(plugin);
+            setSelection(null);
           }}
           onToggle={(plugin, enabled) => void plugins.setEnabled(plugin, enabled)}
         />

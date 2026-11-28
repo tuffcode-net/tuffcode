@@ -7,8 +7,6 @@ const EMPTY_TURNS: ReadonlySet<string> = new Set();
 
 const messagesByThread = new Map<string, LocalUserMessage[]>();
 const supersededTurnsByThread = new Map<string, ReadonlySet<string>>();
-/** Persisted rows the user hid for this session; a refetch must not bring them back. */
-const hiddenByThread = new Map<string, ReadonlySet<string>>();
 const approvals = new Map<string, ApprovalChoice>();
 const listeners = new Set<() => void>();
 
@@ -140,24 +138,7 @@ export function pruneResolvedLocalUserMessages(
 export function clearLocalUserMessages(threadId: string): void {
   if (!messagesByThread.delete(threadId)) return;
   supersededTurnsByThread.delete(threadId);
-  hiddenByThread.delete(threadId);
   emit();
-}
-
-/** Hides one persisted message for the rest of the session. */
-export function hideLocalUserMessage(threadId: string, messageId: string): void {
-  const current = hiddenByThread.get(threadId) ?? EMPTY_TURNS;
-  if (current.has(messageId)) return;
-  hiddenByThread.set(threadId, new Set(current).add(messageId));
-  emit();
-}
-
-export function hiddenMessageIds(threadId: string): ReadonlySet<string> {
-  return hiddenByThread.get(threadId) ?? EMPTY_TURNS;
-}
-
-export function useHiddenMessageIds(threadId: string): ReadonlySet<string> {
-  return useSyncExternalStore(subscribe, () => hiddenMessageIds(threadId));
 }
 
 export function localUserMessages(threadId: string): readonly LocalUserMessage[] {

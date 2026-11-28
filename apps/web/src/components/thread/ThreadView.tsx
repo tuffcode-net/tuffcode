@@ -17,12 +17,7 @@ import { useSubagentList } from '../subagents/use-subagents';
 import { Composer } from './Composer';
 import { FindBar } from './find-bar';
 import { groupTimeline, type UserItem } from './grouping';
-import {
-  useApprovalDecisions,
-  useHiddenMessageIds,
-  useLocalUserMessages,
-  useSupersededTurns,
-} from './local-messages';
+import { useApprovalDecisions, useLocalUserMessages, useSupersededTurns } from './local-messages';
 import { StatusChip } from './status-chip';
 import { Timeline, type TimelineHandle } from './Timeline';
 import { foldTurnSteps, groupTurnBlocks } from './turn-blocks';
@@ -67,7 +62,6 @@ export function ThreadView({
   const userMessages = useLocalUserMessages(threadId);
   const approvals = useApprovalDecisions();
   const supersededTurns = useSupersededTurns(threadId);
-  const hiddenMessages = useHiddenMessageIds(threadId);
   const theme = useAppStore((state) => state.settings?.theme ?? 'dark');
 
   // Boolean and string selectors only: child frames mutate `subagents` on every
@@ -91,20 +85,16 @@ export function ThreadView({
   const dockRef = useRef<HTMLDivElement>(null);
   useDockInset(stageRef, dockRef, subagentPaneOpen);
 
-  const visibleMessages = useMemo(
-    () => (messages ?? []).filter((message) => !hiddenMessages.has(message.id)),
-    [messages, hiddenMessages],
-  );
   const items = useMemo(
     () =>
       groupTimeline({
         events: events ?? EMPTY_EVENTS,
-        messages: visibleMessages,
+        messages: messages ?? [],
         userMessages,
         approvals,
         supersededTurns,
       }),
-    [approvals, events, supersededTurns, userMessages, visibleMessages],
+    [approvals, events, messages, supersededTurns, userMessages],
   );
   // The folded timeline is the finder's match source: the virtualizer only mounts
   // the visible rows, so a DOM search could never see a match deep in history.

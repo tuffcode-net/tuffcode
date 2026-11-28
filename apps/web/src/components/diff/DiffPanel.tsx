@@ -20,9 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
-import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
-import { useAppStore } from '../../store/app-store';
 import { DIFF_LINE_MENU, type ActionContext } from '../actions';
 import { useActionPorts } from '../menu/action-context';
 import { useMenu } from '../menu/Menu';
@@ -54,16 +52,10 @@ interface CommentAnchor {
   side: ReviewCommentSide;
 }
 
-function noPreviewLabel(file: DiffFile): string {
-  if (file.binary) return 'Binary file';
-  if (file.patch === null) return 'Patch too large';
-  return 'No text hunks';
-}
-
 function noPreviewDescription(file: DiffFile): string {
   if (file.binary) return 'This file is binary, so there is no text diff to render.';
   if (file.patch === null) {
-    return 'Open the file in the editor to read the full change.';
+    return 'This patch is too large to render. Open the file in the editor instead.';
   }
   return 'This change has no text hunks to render.';
 }
@@ -81,10 +73,8 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
   const rpc = useRpc();
   const menu = useMenu();
   const ports = useActionPorts();
-  const theme = useAppStore((state) => state.settings?.theme);
 
   const [checkpointId, setCheckpointId] = useState<string | null>(null);
-  const [savingCheckpoint, setSavingCheckpoint] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [files, setFiles] = useState<DiffFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -165,9 +155,11 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
       .request('comments.list', { threadId })
       .then((result) => {
         if (cancelled) return;
-        // The server list is the truth: a comment deleted or invalidated elsewhere
-        // must disappear here instead of living on in a merged map.
-        setComments(result);
+        setComments((previous) => {
+          const byId = new Map(previous.map((comment) => [comment.id, comment]));
+          for (const comment of result) byId.set(comment.id, comment);
+          return [...byId.values()];
+        });
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -188,24 +180,6 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
 
   function reload(): void {
     setReloadToken((token) => token + 1);
-  }
-
-  async function saveCheckpoint(): Promise<void> {
-    if (savingCheckpoint) return;
-    setSavingCheckpoint(true);
-    setCheckpointError(null);
-    try {
-      const label = `Checkpoint ${checkpoints.length + 1} · ${new Date().toLocaleString()}`;
-      await rpc.request('checkpoints.create', { threadId, label });
-      toast.success('Checkpoint saved.');
-      reload();
-    } catch (caught) {
-      setCheckpointError(
-        caught instanceof Error ? caught.message : 'Could not save the checkpoint.',
-      );
-    } finally {
-      setSavingCheckpoint(false);
-    }
   }
 
   function toggleTree(): void {
@@ -260,16 +234,14 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
     setSavingComment(true);
     setDraftError(null);
     try {
-      await rpc.request('comments.add', {
+      const created = await rpc.request('comments.add', {
         threadId,
         filePath: draft.path,
         line: draft.line,
         side: draft.side,
         body: draftBody.trim(),
       });
-      // Refetch instead of appending: an in-flight list request would otherwise wipe
-      // the new row, or a late response would duplicate it.
-      reload();
+      setComments((previous) => [...previous, created]);
       setDraft(null);
       setDraftBody('');
     } catch (caught) {
@@ -302,7 +274,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
 
   return (
     <section
-      aria-label="Changes"
+      aria-label="Diff"
       data-testid="diff-panel"
       className="flex h-full min-h-0 flex-col bg-background text-foreground"
     >
@@ -351,15 +323,6 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             onValueChange={handleCheckpointChange}
           />
         </div>
-        <Button
-          size="sm"
-          variant="ghost"
-          data-testid="diff-save-checkpoint"
-          disabled={savingCheckpoint}
-          onClick={() => void saveCheckpoint()}
-        >
-          Save checkpoint
-        </Button>
         {files.length > 0 ? (
           <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs tabular-nums">
             <span className="text-success-foreground">+{summary.additions}</span>
@@ -494,7 +457,6 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             >
               <DiffViewer
                 className="[&>div]:min-h-20"
-                theme={theme}
                 hideFileHeader
                 overflow="scroll"
                 files={[{ path: selectedFile.path, patch: selectedFile.patch }]}
@@ -506,8 +468,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             <div className="flex min-h-0 flex-1 items-center px-3">
               <EmptyState
                 variant="inline"
-                title={noPreviewLabel(selectedFile)}
-                description={noPreviewDescription(selectedFile)}
+                title={noPreviewDescription(selectedFile)}
                 className="w-full"
               />
             </div>
@@ -519,10 +480,9 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             <div className="flex min-h-0 flex-1 items-center px-3">
               <EmptyState
                 variant="inline"
-                title="No changes"
-                description={
+                title={
                   checkpointId === null
-                    ? 'The worktree matches HEAD.'
+                    ? 'No changes; the worktree matches HEAD.'
                     : 'Nothing changed since this checkpoint.'
                 }
                 action={

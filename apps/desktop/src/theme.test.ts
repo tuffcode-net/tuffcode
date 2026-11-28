@@ -128,11 +128,6 @@ describe('readPersistedTheme', () => {
     expect(readPersistedTheme(writeTheme(tempDir(), 'light'))).toBe('light');
   });
 
-  it('reads a named light palette as light chrome', () => {
-    expect(readPersistedTheme(writeTheme(tempDir(), 'solarized-light'))).toBe('light');
-    expect(readPersistedTheme(writeTheme(tempDir(), 'catppuccin-latte'))).toBe('light');
-  });
-
   it('reads a persisted dark theme', () => {
     expect(readPersistedTheme(writeTheme(tempDir(), 'dark'))).toBe('dark');
   });

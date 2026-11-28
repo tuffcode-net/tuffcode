@@ -1,14 +1,6 @@
 import { Link } from '@tanstack/react-router';
-import {
-  Badge,
-  Button,
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  buttonVariants,
-} from '@tuffcode/ui';
-import { useCallback, useEffect, useState } from 'react';
+import { Badge, Card, CardDescription, CardHeader, CardTitle, buttonVariants } from '@tuffcode/ui';
+import { useEffect } from 'react';
 import { toast } from 'sonner';
 import { componentLabel } from '../../components/plugins/plugins-model';
 import { SettingsSectionHeader } from '../../components/settings/settings-section-header';
@@ -24,24 +16,16 @@ export function PluginsSettingsSection() {
   const rpc = useRpc();
   const plugins = useAppStore((state) => state.plugins);
   const setPlugins = useAppStore((state) => state.setPlugins);
-  const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    void rpc.request('plugins.installed', {}).then(setPlugins, (caught: unknown) => {
-      setError(caught instanceof Error ? caught.message : 'Could not load installed plugins.');
-    });
+  useEffect(() => {
+    void rpc.request('plugins.installed', {}).then(setPlugins, () => undefined);
   }, [rpc, setPlugins]);
-
-  useEffect(load, [load]);
 
   async function toggle(id: string, enabled: boolean): Promise<void> {
     try {
       await rpc.request('plugins.setEnabled', { id, enabled });
-    } catch (caught) {
-      toast.error(caught instanceof Error ? caught.message : 'Could not update the plugin.');
-      // The checkbox is controlled by the store, so re-reading it puts the switch back.
-      load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not update the plugin.');
     }
   }
 
@@ -59,25 +43,8 @@ export function PluginsSettingsSection() {
       <Card>
         <CardHeader>
           <CardTitle>Active</CardTitle>
-          <CardDescription>
-            {error !== null
-              ? 'Could not load installed plugins.'
-              : plugins.length === 0
-                ? 'Nothing installed yet.'
-                : `${plugins.length} installed`}
-          </CardDescription>
+          <CardDescription>{plugins.length === 0 ? 'Nothing installed yet.' : `${plugins.length} installed`}</CardDescription>
         </CardHeader>
-        {error !== null ? (
-          <div
-            data-testid="plugins-settings-error"
-            className="flex items-center gap-2 border-t border-error/40 bg-error-surface px-4 py-2 text-xs text-error-foreground"
-          >
-            <span className="min-w-0 flex-1">{error}</span>
-            <Button size="sm" variant="outline" onClick={load}>
-              Retry
-            </Button>
-          </div>
-        ) : null}
         <div className="divide-y divide-border border-t border-border">
           {plugins.map((plugin) => (
             <div key={plugin.id} className="flex items-center gap-3 px-4 py-3" data-testid="settings-plugin-row">

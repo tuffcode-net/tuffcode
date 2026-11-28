@@ -35,20 +35,20 @@ export const STATUS_TONE: Record<StatusKey, StatusTone> = {
 
 export const STATUS_DOT_CLASS: Record<StatusTone, string> = {
   neutral: 'bg-muted-foreground',
-  running: 'bg-info',
-  warning: 'bg-warning',
-  success: 'bg-success',
-  error: 'bg-error',
-  plan: 'bg-primary',
+  running: 'bg-sky-400',
+  warning: 'bg-amber-400',
+  success: 'bg-emerald-400',
+  error: 'bg-red-400',
+  plan: 'bg-violet-400',
 };
 
 export const STATUS_TEXT_CLASS: Record<StatusTone, string> = {
   neutral: 'text-muted-foreground',
-  running: 'text-info-foreground',
-  warning: 'text-warning-foreground',
-  success: 'text-success-foreground',
-  error: 'text-error-foreground',
-  plan: 'text-primary',
+  running: 'text-sky-400',
+  warning: 'text-amber-400',
+  success: 'text-emerald-400',
+  error: 'text-red-400',
+  plan: 'text-violet-400',
 };
 
 export const STATUS_LABEL: Record<StatusKey, string> = {

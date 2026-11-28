@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PermissionModeSchema, ReasoningEffortSchema, type GoalAutonomy } from './entities.js';
+import { DEFAULT_REMOTE_SETTINGS, RemoteSettingsSchema } from './remote.js';
 
 export const ThemeSchema = z.enum(['dark', 'light']);
 export type Theme = z.infer<typeof ThemeSchema>;
@@ -150,6 +151,7 @@ const SettingsFields = {
   maxOutputTokens: z.number().int().min(256).max(65536),
   showContextMeter: z.boolean(),
   paneLayout: z.unknown().optional(),
+  remote: RemoteSettingsSchema,
 };
 
 export const SettingsSchema = z.object({
@@ -193,6 +195,7 @@ export const SettingsSchema = z.object({
   maxOutputTokens: SettingsFields.maxOutputTokens.default(8192),
   showContextMeter: SettingsFields.showContextMeter.default(true),
   paneLayout: SettingsFields.paneLayout,
+  remote: SettingsFields.remote.default(() => ({ ...DEFAULT_REMOTE_SETTINGS })),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

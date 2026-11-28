@@ -8,14 +8,12 @@ afterEach(() => {
 interface ThemeTarget {
   classList: { add(name: string): void; remove(name: string): void };
   dataset: { theme?: string };
-  style: { colorScheme: string; setProperty(name: string, value: string): void };
 }
 
 function createTarget(): ThemeTarget {
   return {
     classList: { add: () => undefined, remove: () => undefined },
     dataset: {},
-    style: { colorScheme: '', setProperty: () => undefined },
   };
 }
 

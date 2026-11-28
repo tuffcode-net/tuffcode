@@ -139,7 +139,7 @@ function SubagentSurface({ threadId, onClose }: SubagentSurfaceProps) {
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         <EmptyState
           title="No subagent yet"
-          description="Run /subagent <type> <task> in the composer, or wait for the agent to spawn one, and its timeline appears here."
+          description="Spawn a subagent from the composer and its timeline appears here."
           className="w-full max-w-sm"
         />
       </div>

@@ -1,6 +1,4 @@
 import type { InterfaceSize, Theme } from '@tuffcode/contracts';
-import { themeBase } from '@tuffcode/contracts';
-import { applyThemePalette } from '@tuffcode/ui';
 
 /** The window can follow the OS, so the preference is wider than the stored theme. */
 export type ThemePreference = Theme | 'system';
@@ -23,27 +21,25 @@ export function rootFontSize(fontSize: number): number {
   return (ROOT_FONT_SIZE * fontSize) / DEFAULT_FONT_SIZE;
 }
 
-/** The base scheme a named theme paints, used for native chrome and the toast host. */
 export function resolveTheme(theme: ThemePreference, prefersLight: boolean): 'dark' | 'light' {
-  if (theme === 'system') return prefersLight ? 'light' : 'dark';
-  return themeBase(theme);
+  if (theme !== 'system') return theme;
+  return prefersLight ? 'light' : 'dark';
 }
 
-/** Applies the palette to the document and the base scheme to the native window chrome. */
+/** Applies the theme to the document and to the native window chrome. */
 export function applyTheme(
   theme: ThemePreference,
   target: HTMLElement = document.documentElement,
 ): void {
-  const id =
-    theme === 'system'
-      ? window.matchMedia('(prefers-color-scheme: light)').matches
-        ? 'light'
-        : 'dark'
-      : theme;
-  const palette = applyThemePalette(id, target);
-  // The preload resolves the base scheme for the main process, which repaints the
+  const resolved = resolveTheme(theme, window.matchMedia('(prefers-color-scheme: light)').matches);
+  target.classList.add('no-transitions');
+  target.dataset.theme = resolved;
+  // The preload forwards the resolved theme to the main process, which repaints the
   // native title bar overlay and window background.
-  window.tuffcode.setTheme(palette.id, palette.base);
+  window.tuffcode.setTheme(resolved);
+  requestAnimationFrame(() => {
+    target.classList.remove('no-transitions');
+  });
 }
 
 export interface AppearanceValues {

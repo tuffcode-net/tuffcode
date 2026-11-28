@@ -113,46 +113,30 @@ export function subagentStripChips(children: readonly SubagentChild[]): Subagent
   if (children.length === 0) return [];
 
   const running = children.filter(isRunningSubagent);
-  const settled = children.filter((child) => !isRunningSubagent(child));
-  const finished =
-    settled.length === 0
-      ? null
-      : {
-          kind: 'finished' as const,
-          count: settled.length,
-          label: subagentFinishedLabel(settled.length),
-          childId: settled[settled.length - 1]?.childId ?? '',
-        };
+  if (running.length === 0) {
+    const last = children[children.length - 1];
+    if (last === undefined) return [];
+    return [
+      {
+        kind: 'finished',
+        count: children.length,
+        label: subagentFinishedLabel(children.length),
+        childId: last.childId,
+      },
+    ];
+  }
 
-  if (running.length === 0) return finished === null ? [] : [finished];
+  if (children.length <= SUBAGENT_CHIP_LIMIT) {
+    return children.map((child): SubagentChip => ({ kind: 'child', child }));
+  }
 
   const target = running[0];
-  if (target === undefined) return finished === null ? [] : [finished];
-  const shown =
-    running.length <= SUBAGENT_CHIP_LIMIT
-      ? running
-      : running.slice(0, SUBAGENT_CHIP_RUNNING_LIMIT);
-  const chips = shown.map((child): SubagentChip => ({ kind: 'child', child }));
-  if (running.length > SUBAGENT_CHIP_LIMIT) {
-    chips.push({ kind: 'more', count: running.length - shown.length, childId: target.childId });
-  }
-  if (finished !== null) chips.push(finished);
-  return chips;
-}
-
-/**
- * The pane's tabs: live work plus anything that needs attention. A settled child
- * stays reachable only while it is the open tab, so the tab row does not fill with
- * finished work.
- */
-export function subagentPaneChildren(
-  children: readonly SubagentChild[],
-  activeChildId: string | null,
-): SubagentChild[] {
-  return children.filter(
-    (child) =>
-      isRunningSubagent(child) || child.status === 'failed' || child.childId === activeChildId,
-  );
+  if (target === undefined) return [];
+  const shown = running.slice(0, SUBAGENT_CHIP_RUNNING_LIMIT);
+  return [
+    ...shown.map((child): SubagentChip => ({ kind: 'child', child })),
+    { kind: 'more', count: children.length - shown.length, childId: target.childId },
+  ];
 }
 
 /** Elapsed time from start to finish, or to `nowMs` while the child runs. */

@@ -83,9 +83,9 @@
   --border: rgb(0 0 0 / 10%);
   --input: rgb(0 0 0 / 14%);
   --success: #047857;
-  --success-foreground: #047857;
+  --success-foreground: #059669;
   --warning: #b45309;
-  --warning-foreground: #92400e;
+  --warning-foreground: #d97706;
   --warning-surface: color-mix(in srgb, #b45309 10%, transparent);
   --info: #2563eb;
   --info-foreground: #1d4ed8;

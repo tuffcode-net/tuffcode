@@ -263,14 +263,6 @@ export function UserBubble({
   );
 }
 
-/**
- * Assistant prose links leave the app: the desktop bridge validates the scheme
- * (http and https only) and opens the system browser.
- */
-function openExternalLink(href: string): void {
-  window.tuffcode?.openExternal?.(href);
-}
-
 /** Context the model wrote before reaching for a tool: smaller and narrower. */
 export function ProseText({ block, theme }: { block: ProseBlock; theme: MarkdownTheme }) {
   return (
@@ -278,7 +270,7 @@ export function ProseText({ block, theme }: { block: ProseBlock; theme: Markdown
       data-testid="assistant-prose"
       className="max-w-[72ch] px-1 text-[13.5px] leading-[1.65] text-foreground [&_p]:my-2 [&_p]:leading-[1.65] [&_p:first-child]:mt-0 [&_p:last-child]:mb-0"
     >
-      <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
+      <Markdown content={block.text} theme={theme} />
       {block.streaming ? <StreamingCaret /> : null}
     </div>
   );
@@ -354,7 +346,7 @@ export function FinalAnswer({ block, theme, threadId, onRetry, onEdit }: FinalAn
         data-testid="assistant-message"
         className="max-w-[var(--chat-content-max-width)] px-1 text-sm leading-6 text-foreground"
       >
-        <Markdown content={block.text} theme={theme} onLinkClick={openExternalLink} />
+        <Markdown content={block.text} theme={theme} />
         {block.streaming ? <StreamingCaret /> : null}
       </div>
 

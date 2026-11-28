@@ -97,23 +97,6 @@ function planSkills(
   }
 }
 
-/** Inline comments the user has not resolved yet, bounded for the prompt. */
-const REVIEW_COMMENT_LIMIT = 100;
-const REVIEW_COMMENT_CHARS = 500;
-
-function renderReviewComments(repos: Repos, threadId: string): string {
-  return repos.comments
-    .list(threadId)
-    .filter((comment) => !comment.resolved)
-    .slice(0, REVIEW_COMMENT_LIMIT)
-    .map((comment) => {
-      const body = comment.body.replace(/\s+/g, ' ').trim();
-      const text = body.length <= REVIEW_COMMENT_CHARS ? body : `${body.slice(0, REVIEW_COMMENT_CHARS - 3)}...`;
-      return `- ${comment.filePath}:${comment.line} (${comment.side}): ${text}`;
-    })
-    .join('\n');
-}
-
 export function planPrompt(repos: Repos, input: PromptPlanInput): PromptPlan {
   const { thread, project, message, settings } = input;
   const now = input.now ?? new Date();
@@ -127,12 +110,9 @@ export function planPrompt(repos: Repos, input: PromptPlanInput): PromptPlan {
 
   const skillPlan = planSkills(repos, project.path, message, settings);
   const projectRules = loadProjectRules(project.path, message);
-  const reviewComments = renderReviewComments(repos, thread.id);
   const assembly = assemblePrompt({
-    role: thread.parentThreadId === null ? 'main' : 'child',
     customInstructions: settings.customInstructions,
     projectRules: projectRules.text,
-    reviewComments,
     profile: settings.profile,
     responseStyle: settings.responseStyle,
     skills: skillPlan.skills,

@@ -1,6 +1,6 @@
 import type { DiffFile, Thread } from '@tuffcode/contracts';
 import { Button } from '@tuffcode/ui';
-import { FileDiff, GitCommit, GitPullRequest } from 'lucide-react';
+import { FileDiff, GitPullRequest } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
@@ -25,14 +25,13 @@ export function diffTotals(files: readonly DiffFile[]): DiffTotals {
 
 /**
  * The card under a finished turn: how much the thread changed, with Review changes
- * Commit and push, and Create PR. Counts come from one `diff.get` after the turn settles, so they are
+ * and Create PR. Counts come from one `diff.get` after the turn settles, so they are
  * the real working-tree numbers, not a sum of tool calls.
  */
 export function TurnSummary({ thread }: { thread: Thread }) {
   const rpc = useRpc();
   const [totals, setTotals] = useState<DiffTotals | null>(null);
   const [creating, setCreating] = useState(false);
-  const [pushing, setPushing] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
   const settled = thread.status !== 'running' && thread.status !== 'needs-approval';
 
@@ -62,34 +61,12 @@ export function TurnSummary({ thread }: { thread: Thread }) {
         body: `Changes from the Tuffcode chat "${thread.title}".`,
         draft: true,
       });
-      toast.success(`Draft pull request #${result.number} created.`);
+      toast.success(`Draft pull request #${result.number} opened.`);
       window.tuffcode?.openExternal?.(result.url);
     } catch (error) {
       setPrError(error instanceof Error ? error.message : 'Could not open the pull request.');
     } finally {
       setCreating(false);
-    }
-  }
-
-  async function commitAndPush(): Promise<void> {
-    setPushing(true);
-    setPrError(null);
-    try {
-      try {
-        await rpc.request('git.commit', {
-          threadId: thread.id,
-          message: `Changes from ${thread.title}`,
-        });
-      } catch (error) {
-        // The agent may have committed already; pushing is still useful.
-        if (!(error instanceof Error) || !error.message.includes('nothing to commit')) throw error;
-      }
-      await rpc.request('git.push', { threadId: thread.id });
-      toast.success('Committed and pushed.');
-    } catch (error) {
-      setPrError(error instanceof Error ? error.message : 'Could not commit and push.');
-    } finally {
-      setPushing(false);
     }
   }
 
@@ -108,23 +85,11 @@ export function TurnSummary({ thread }: { thread: Thread }) {
         <Button size="sm" variant="ghost" onClick={() => requestInspectorTab('diff')} data-testid="turn-summary-review">
           Review changes
         </Button>
-        {thread.branch === null ? null : (
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={pushing || creating}
-            onClick={() => void commitAndPush()}
-            data-testid="turn-summary-commit-push"
-          >
-            <GitCommit className="size-3.5" strokeWidth={1.75} />
-            Commit and push
-          </Button>
-        )}
         {thread.prUrl === null ? (
           <Button
             size="sm"
             variant="outline"
-            disabled={creating || pushing || thread.branch === null}
+            disabled={creating || thread.branch === null}
             title={thread.branch === null ? 'Pull requests need a worktree branch.' : undefined}
             onClick={() => void createPr()}
             data-testid="turn-summary-pr"

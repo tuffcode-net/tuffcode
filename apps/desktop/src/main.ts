@@ -82,16 +82,6 @@ function rendererIndexFile(): string {
     : resolve(app.getAppPath(), '../web/dist/index.html');
 }
 
-/**
- * Directory the server serves over HTTP for the browser client. Packaged builds ship
- * the renderer under `resources/web`; source runs use the workspace build output.
- */
-function webRootDir(): string {
-  return app.isPackaged
-    ? join(process.resourcesPath, 'web')
-    : resolve(app.getAppPath(), '../web/dist');
-}
-
 function createWindow(theme: ResolvedTheme): BrowserWindow {
   const { backgroundColor, titleBarOverlay } = windowChromeOptions(theme);
   const window = new BrowserWindow({
@@ -292,7 +282,6 @@ async function startServerProcess(): Promise<RunningServer | null> {
         ...process.env,
         TUFFCODE_HOME: tuffcodeHome(),
         TUFFCODE_APP_VERSION: app.getVersion(),
-        TUFFCODE_WEB_ROOT: webRootDir(),
       },
       logger,
     });

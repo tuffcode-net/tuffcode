@@ -1,6 +1,5 @@
 import type { Repos } from '../db/repos/index.js';
 import { badRequest, conflict, RpcError } from '../errors.js';
-import { commitThread, pushThread } from './commit.js';
 import { requireWorktree } from './context.js';
 import { runExecutable, tryRunGit, GitError } from './runGit.js';
 import { currentBranch } from './worktree.js';
@@ -14,26 +13,6 @@ export interface PullRequestInput {
 export interface PullRequestResult {
   url: string;
   number: number;
-}
-
-/**
- * Makes the branch safe to open a pull request from: commits any leftover work and
- * pushes it. A thread the agent already committed has nothing to commit, which is not
- * an error; the push still runs so the remote is current.
- */
-export async function preparePullRequest(
-  repos: Repos,
-  threadId: string,
-  title: string,
-): Promise<void> {
-  // Validate before touching the tree: a bad title must not commit and push work.
-  if (title.trim().length === 0) throw badRequest('pull request title is required');
-  try {
-    await commitThread(repos, threadId, `Changes from ${title}`);
-  } catch (error) {
-    if (!(error instanceof RpcError) || error.code !== 'conflict') throw error;
-  }
-  await pushThread(repos, threadId);
 }
 
 /**

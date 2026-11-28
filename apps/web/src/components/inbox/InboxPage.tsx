@@ -31,13 +31,11 @@ export function InboxPage() {
       <div className="mx-auto flex w-full max-w-[880px] shrink-0 flex-col gap-1 px-6 pt-6 pb-3">
         <h1 className="text-xl font-semibold tracking-tight text-foreground">Needs you</h1>
         <p className="text-xs text-muted-foreground">
-          {inbox.error !== null
-            ? 'Could not load threads.'
-            : inbox.threads.length === 0
-              ? 'Every project in one list.'
-              : attention === 0
-                ? `${inbox.threads.length} threads, nothing waiting on you.`
-                : `${attention} of ${inbox.threads.length} threads need attention.`}
+          {inbox.threads.length === 0
+            ? 'Every project in one list.'
+            : attention === 0
+              ? `${inbox.threads.length} threads, nothing waiting on you.`
+              : `${attention} of ${inbox.threads.length} threads need attention.`}
         </p>
       </div>
 
@@ -77,7 +75,7 @@ export function InboxPage() {
             </section>
           ))}
 
-          {inbox.threads.length === 0 && inbox.error === null ? (
+          {inbox.threads.length === 0 ? (
             inbox.loading ? (
               <div className="flex justify-center py-10">
                 <Spinner size="sm" label="Loading threads" />
@@ -134,7 +132,7 @@ function InboxRow({ thread }: { thread: DashboardThread }) {
       <Link
         to="/project/$projectId/thread/$threadId"
         params={{ projectId: thread.projectId, threadId: thread.threadId }}
-        className="flex min-w-0 flex-1 flex-col gap-1 rounded-md px-3 py-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none"
+        className="flex min-w-0 flex-1 flex-col gap-1 rounded-md px-3 py-2 focus-visible:outline-none"
       >
         <div className="flex min-w-0 items-center gap-2">
           <span

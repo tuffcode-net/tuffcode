@@ -221,7 +221,7 @@ export function YourTuffcodeSection() {
               <p className="text-xs text-muted-foreground">Nothing remembered yet.</p>
             ) : null}
             {memory.status === 'ready'
-              ? memory.entries.map((entry) => (
+              ? memory.entries.slice(0, 100).map((entry) => (
                   <div key={entry.id} className="flex items-start gap-2 py-1" data-testid="memory-entry">
                     <Badge variant="neutral" size="sm" className="mt-0.5 shrink-0">
                       {KIND_LABEL[entry.kind] ?? entry.kind}

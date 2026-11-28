@@ -22,11 +22,11 @@ const STATUS_CHIP_TONE: Record<StatusKey, StatusChipTone> = {
 
 const STATUS_CHIP_CLASS: Record<StatusChipTone, string> = {
   neutral: 'bg-muted-foreground/10 text-muted-foreground',
-  running: 'bg-info/10 text-info-foreground',
-  warning: 'bg-warning/10 text-warning-foreground',
-  success: 'bg-success/10 text-success-foreground',
-  error: 'bg-error/10 text-error-foreground',
-  plan: 'bg-primary/10 text-primary',
+  running: 'bg-sky-400/10 text-sky-400',
+  warning: 'bg-amber-400/10 text-amber-400',
+  success: 'bg-emerald-400/10 text-emerald-400',
+  error: 'bg-red-400/10 text-red-400',
+  plan: 'bg-violet-400/10 text-violet-400',
 };
 
 /** Maps a thread status onto its tinted chip label and 10 percent background. */

@@ -15,6 +15,7 @@ import {
 import {
   MOCK_SUBAGENT_FINAL,
   MOCK_SUBAGENT_TASK,
+  MOCK_SUBAGENT_TWO_TASK,
   MOCK_TEXT,
 } from './mock-openai';
 
@@ -109,10 +110,21 @@ test('spawns a child, shows its card under the spawn turn, and opens the pane', 
     await page.screenshot({ path: join(shots, `${prefix}-pane-narrow.png`) });
   }
 
-  // A second child is spawned. Settled children fold into the strip summary, so
-  // the pane tabs only keep running work; closing the pane is the stable check.
+  // A second child adds a tab; selecting it switches the pane header and task.
   await sendMessage(page, 'spawn-subagent-two');
-  await expect(page.getByTestId('subagent-task')).toHaveCount(2);
+  const tabs = page.getByTestId('subagent-tabs');
+  await expect(tabs).toBeVisible();
+  await expect(page.getByTestId('subagent-tab')).toHaveCount(2);
+
+  await tabs.getByRole('tab', { name: /Reviewer/ }).click();
+  await expect(header).toContainText('Reviewer');
+  // Every child panel stays mounted, so scope to the selected reviewer panel
+  // instead of matching the first task element. The task text arrives with the
+  // debounced subagents.list merge.
+  const reviewerPanel = page.getByRole('tabpanel', { name: /Reviewer/ });
+  await expect(reviewerPanel.getByTestId('subagent-task')).toContainText(
+    MOCK_SUBAGENT_TWO_TASK,
+  );
 
   // Closing the pane returns to the strip without losing either child.
   await page.getByTestId('subagent-pane-close').click();
