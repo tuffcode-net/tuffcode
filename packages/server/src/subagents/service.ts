@@ -22,6 +22,7 @@ import {
 } from '@tuffcode/prompt';
 import { newId, worktreesRoot, type Logger } from '@tuffcode/shared';
 import { createBrainStore, type BrainStore } from '../brain/store.js';
+import type { RunningBudget } from '../budget.js';
 import type { Repos, SubagentRecord } from '../db/repos/index.js';
 import { toSubagentView } from '../db/repos/index.js';
 import { badRequest, conflict, notFound, RpcError } from '../errors.js';
@@ -46,6 +47,8 @@ export interface SubagentDeps {
   runner: Runner;
   logger: Logger;
   settings: () => Settings;
+  /** The process-wide child budget; one instance shared with every parent. */
+  budget: RunningBudget;
   /** Test seam: any port may be replaced by a fake. */
   ports?: Partial<SubagentPorts>;
   brain?: BrainStore;
@@ -329,8 +332,8 @@ export function createSubagents(deps: SubagentDeps): Subagents {
 
   /** Parent thread id -> child ids waiting for a slot, in spawn order. */
   const queues = new Map<string, string[]>();
-  /** Parent thread id -> children currently holding a slot. */
-  const running = new Map<string, number>();
+  /** Checkout removals still running, so shutdown can wait for them. */
+  const worktreeTasks = new Set<Promise<void>>();
   const active = new Map<string, ChildRun>();
   const settled = new Set<string>();
   const waiters = new Map<string, (view: SubagentView) => void>();
@@ -454,13 +457,22 @@ export function createSubagents(deps: SubagentDeps): Subagents {
     for (const resolve of waiters) resolve();
   }
 
-  /** Settles one open question exactly once, whatever unblocks the child. */
-  function settleQuestion(questionId: string, text: string): boolean {
+  /**
+   * Settles one open question exactly once, whatever unblocks the child. A question
+   * settled by a stop, a close or the timeout writes the text the child received as an
+   * answer row, so the stored pairing of question and answer stays exact and a restart
+   * cannot resurrect it as open.
+   */
+  function settleQuestion(questionId: string, text: string, writeRow = false): boolean {
     const pending = pendingQuestions.get(questionId);
     if (pending === undefined || pending.settled) return false;
     pending.settled = true;
     clearTimeout(pending.timer);
     pendingQuestions.delete(questionId);
+    if (writeRow) {
+      const record = repos.subagents.get(pending.childId);
+      if (record !== undefined) postMessage(record, 'to-child', text, { kind: 'answer' });
+    }
     pending.resolve(text);
     return true;
   }
@@ -468,20 +480,41 @@ export function createSubagents(deps: SubagentDeps): Subagents {
   /** Every open question of one child settles with `text`, so a stop never hangs it. */
   function settleChildQuestions(childId: string, text: string): void {
     for (const pending of pendingQuestions.values()) {
-      if (pending.childId === childId) settleQuestion(pending.questionId, text);
+      if (pending.childId === childId) settleQuestion(pending.questionId, text, true);
     }
   }
 
+  /**
+   * The mailbox rows that still read as an open question: the newest question of a
+   * child with no answer after it. This is derived from storage, so a reload or a
+   * restart lists exactly the questions a child is still waiting on, and a question
+   * settled by a stop or the timeout is not one of them.
+   */
+  function storedQuestions(childId: string): SubagentMessage | undefined {
+    let open: SubagentMessage | undefined;
+    for (const message of repos.subagents.listMessages(childId)) {
+      if (message.kind === 'question' && message.direction === 'to-parent') open = message;
+      else if (message.kind === 'answer' && message.direction === 'to-child') open = undefined;
+    }
+    return open;
+  }
+
   function openQuestions(threadId?: string): SubagentQuestionView[] {
-    return [...pendingQuestions.values()]
-      .filter((pending) => threadId === undefined || pending.threadId === threadId)
-      .map((pending) => ({
-        questionId: pending.questionId,
-        childId: pending.childId,
-        threadId: pending.threadId,
-        text: pending.text,
-        createdAt: pending.createdAt,
-      }));
+    const views: SubagentQuestionView[] = [];
+    for (const record of repos.subagents.listAll()) {
+      if (record.closedAt !== null) continue;
+      if (threadId !== undefined && record.threadId !== threadId) continue;
+      const open = storedQuestions(record.childId);
+      if (open === undefined) continue;
+      views.push({
+        questionId: open.id,
+        childId: record.childId,
+        threadId: record.threadId,
+        text: open.text,
+        createdAt: open.createdAt,
+      });
+    }
+    return views.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   /**
@@ -501,7 +534,7 @@ export function createSubagents(deps: SubagentDeps): Subagents {
     const questionId = newId('sq');
     const { promise, resolve } = Promise.withResolvers<string>();
     const timer = setTimeout(
-      () => settleQuestion(questionId, QUESTION_TIMEOUT_TEXT),
+      () => settleQuestion(questionId, QUESTION_TIMEOUT_TEXT, true),
       QUESTION_TIMEOUT_MS,
     );
     timer.unref?.();
@@ -535,12 +568,41 @@ export function createSubagents(deps: SubagentDeps): Subagents {
   ): Promise<{ childId: string }> {
     const pending = pendingQuestions.get(questionId);
     if (pending === undefined || pending.settled) {
-      // A question that was settled by closing its child is not unknown: say so, so the
-      // parent knows the transcript survived and the id is simply final.
+      // No live waiter: the question may still be stored and open, which is what a
+      // reload or a restart leaves behind. The answer is written to the mailbox so the
+      // transcript keeps it, and the question stops reading as open.
       const row = repos.subagents.message(questionId);
       const owner = row === undefined ? undefined : repos.subagents.get(row.childId);
+      // A question that was settled by closing its child is not unknown: say so, so the
+      // parent knows the transcript survived and the id is simply final.
       if (owner !== undefined && owner.closedAt !== null) throw conflict('subagent is closed');
-      throw notFound(`no open question ${questionId}`);
+      if (
+        row === undefined ||
+        row.kind !== 'question' ||
+        owner === undefined ||
+        storedQuestions(owner.childId)?.id !== questionId
+      ) {
+        throw notFound(`no open question ${questionId}`);
+      }
+      if (threadId !== undefined && owner.threadId !== threadId) {
+        throw notFound(`no open question ${questionId} under this thread`);
+      }
+      const body = text.trim();
+      if (body.length === 0) throw badRequest('answer text is empty');
+      postMessage(owner, 'to-child', body, { kind: 'answer' });
+      bus.emit({
+        kind: 'event',
+        type: 'subagent.answered',
+        threadId: owner.threadId,
+        payload: {
+          childId: owner.childId,
+          threadId: owner.threadId,
+          questionId,
+          text: body,
+          by,
+        },
+      });
+      return { childId: owner.childId };
     }
     if (threadId !== undefined && pending.threadId !== threadId) {
       throw notFound(`no open question ${questionId} under this thread`);
@@ -683,17 +745,32 @@ export function createSubagents(deps: SubagentDeps): Subagents {
       waiter(view);
     }
     if (record !== undefined) emitFinished(record);
+    // A settled child keeps a checkout only when it holds work: commits ahead of its
+    // base or uncommitted edits. An empty one is reclaimed here, so finishing a worker
+    // that produced nothing leaves no worktree behind, and closing a kept one still
+    // reports where it is.
+    const task = archiveWorktree(record ?? existing)
+      .then((note) => {
+        if (note !== null) logger.debug('subagent worktree kept after settle', { childId, note });
+      })
+      .catch((error: unknown) => {
+        logger.warn('subagent worktree not disposed', { childId, reason: errorMessage(error) });
+      })
+      .finally(() => worktreeTasks.delete(task));
+    worktreeTasks.add(task);
     return record;
   }
 
   function pump(parentThreadId: string): void {
-    const cap = Math.max(1, deps.settings().subagentConcurrency);
     for (;;) {
-      if ((running.get(parentThreadId) ?? 0) >= cap) return;
+      if (!deps.budget.reserve()) return;
       const queue = queues.get(parentThreadId);
       const childId = queue?.shift();
-      if (childId === undefined) return;
-      running.set(parentThreadId, (running.get(parentThreadId) ?? 0) + 1);
+      if (childId === undefined) {
+        // Nothing to start after all: give the slot straight back.
+        deps.budget.release();
+        return;
+      }
       void runChild(childId)
         .catch((error: unknown) => {
           // A throw after the row was marked running would leave it running forever and
@@ -706,7 +783,7 @@ export function createSubagents(deps: SubagentDeps): Subagents {
           }
         })
         .finally(() => {
-          running.set(parentThreadId, Math.max(0, (running.get(parentThreadId) ?? 1) - 1));
+          deps.budget.release();
           // Nothing may wait: settle after shutdown finds the database closed and stops here.
           if ((queues.get(parentThreadId)?.length ?? 0) === 0) return;
           try {
@@ -926,6 +1003,27 @@ export function createSubagents(deps: SubagentDeps): Subagents {
     if (parent === undefined || record.childThreadId === null) {
       throw conflict('the child has no session to resume');
     }
+    // A resume is a child turn like any other, so it takes the same slot. Refusing here
+    // names the reason instead of starting a fifth child beside four running ones.
+    if (!deps.budget.reserve()) {
+      throw conflict(
+        `all ${String(deps.settings().subagentConcurrency)} child slots are busy; try again when one finishes`,
+      );
+    }
+    try {
+      await startResumedChild(record, parent, message, record.childThreadId);
+    } catch (error) {
+      deps.budget.release();
+      throw error;
+    }
+  }
+
+  async function startResumedChild(
+    record: SubagentRecord,
+    parent: Thread,
+    message: string,
+    childThreadId: string,
+  ): Promise<void> {
     const reopened = repos.subagents.reopen(record.childId, nowIso());
     if (reopened === undefined || reopened.status !== 'running') {
       throw conflict('the child could not be reopened');
@@ -937,7 +1035,7 @@ export function createSubagents(deps: SubagentDeps): Subagents {
       parentThreadId: parent.id,
       controller: new AbortController(),
       cancelled: false,
-      childThreadId: record.childThreadId,
+      childThreadId,
     };
     active.set(record.childId, run);
     bus.emit({
@@ -946,12 +1044,12 @@ export function createSubagents(deps: SubagentDeps): Subagents {
       threadId: parent.id,
       payload: { childId: record.childId, threadId: parent.id, type: record.type, model: record.model },
     });
-    const childThreadId = record.childThreadId;
     void driveTurns(run, childThreadId, reopened, parent, followUpText(message))
       .catch((error: unknown) => {
         finish(record.childId, 'failed', `follow-up failed: ${errorMessage(error)}`);
       })
       .finally(() => {
+        deps.budget.release();
         if (active.get(record.childId) === run) active.delete(record.childId);
       });
   }
@@ -1528,6 +1626,7 @@ export function createSubagents(deps: SubagentDeps): Subagents {
       }
       telemetry.clear();
       inboxes.clear();
+      await Promise.allSettled(worktreeTasks);
     },
   };
   return api;
