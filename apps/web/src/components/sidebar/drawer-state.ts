@@ -39,6 +39,14 @@ export interface SidebarPresentationInput {
  * dock cannot hide it. A compact desktop window still pushes the column out for the
  * dock, and a wide window keeps the column exactly as toggled.
  */
+/**
+ * True only while the phone drawer covers the shell. A closed drawer must leave the
+ * banner and the conversation interactive, so this is not the same as "phone layout".
+ */
+export function drawerInertsShell(presentation: SidebarPresentation): boolean {
+  return presentation.mode === 'drawer' && presentation.open;
+}
+
 export function sidebarPresentation({
   width,
   visible,

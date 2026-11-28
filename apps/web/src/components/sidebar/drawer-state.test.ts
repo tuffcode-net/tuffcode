@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPACT_WINDOW_PX,
   PHONE_BREAKPOINT_PX,
+  drawerInertsShell,
   isPhoneLayout,
   sidebarPresentation,
 } from './drawer-state';
@@ -66,5 +67,25 @@ describe('sidebarPresentation', () => {
       mode: 'hidden',
       open: false,
     });
+  });
+});
+
+describe('drawerInertsShell', () => {
+  it('leaves the phone shell live while the drawer is closed', () => {
+    const closed = sidebarPresentation({ ...base, width: 390, requestedOpen: false });
+    expect(closed.mode).toBe('drawer');
+    // The regression: treating the phone layout itself as an open drawer made the
+    // banner and the conversation inert, so no tap reached them.
+    expect(drawerInertsShell(closed)).toBe(false);
+  });
+
+  it('inerts the shell only while the drawer covers it', () => {
+    expect(drawerInertsShell(sidebarPresentation({ ...base, width: 390 }))).toBe(true);
+    expect(drawerInertsShell(sidebarPresentation({ ...base, width: 1440 }))).toBe(false);
+    expect(
+      drawerInertsShell(
+        sidebarPresentation({ ...base, width: 390, visible: false }),
+      ),
+    ).toBe(false);
   });
 });

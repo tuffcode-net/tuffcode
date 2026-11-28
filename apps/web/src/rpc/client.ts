@@ -388,13 +388,14 @@ export function createRpcClient(options: RpcClientOptions): RpcClient {
         return;
       }
       heartbeatInFlight = true;
-      const guard = setTimeout(() => {
-        heartbeatInFlight = false;
-      }, HEARTBEAT_MS - 500);
-      void request('app.health', {}).finally(() => {
-        clearTimeout(guard);
-        heartbeatInFlight = false;
-      });
+      // Only an answer clears the flag. A rejected or timed out probe means the socket
+      // is silent, so the next tick resets it instead of sending another one.
+      void request('app.health', {}).then(
+        () => {
+          heartbeatInFlight = false;
+        },
+        () => undefined,
+      );
     }, HEARTBEAT_MS);
   }
 

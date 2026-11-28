@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
@@ -10,6 +11,24 @@ import { expect, test, type Page } from '@playwright/test';
  * worker by hand: the app has to do it, which is the point of the test.
  */
 const STATE_PATH = join(tmpdir(), 'tuffcode-mobile-e2e.json');
+
+/** The desktop socket uses `ws`, whose client accepts the bearer subprotocol. */
+interface WsClient {
+  on(event: 'message', listener: (data: unknown) => void): void;
+  once(event: 'open', listener: () => void): void;
+  once(event: 'error', listener: (error: unknown) => void): void;
+  off(event: 'message', listener: (data: unknown) => void): void;
+  send(data: string): void;
+  close(): void;
+}
+
+function desktopSocket(): WsClient {
+  const load = createRequire(join(process.cwd(), 'packages/server/package.json'));
+  const ws = load('ws') as { WebSocket: new (url: string, protocols: string[]) => WsClient };
+  return new ws.WebSocket('ws://127.0.0.1:' + state().remotePort + '/ws', [
+    'tuffcode.bearer.' + state().token,
+  ]);
+}
 
 interface MobileState {
   token: string;
@@ -214,21 +233,20 @@ test('disabling remote access cuts every paired device', async ({ browser }) => 
     await pair(one);
     await pair(two);
 
-    const socket = new WebSocket('ws://127.0.0.1:' + state().remotePort + '/ws', [
-      'tuffcode.bearer.' + state().token,
-    ]);
-    await new Promise<void>((ready) => {
-      socket.addEventListener('open', () => ready(), { once: true });
+    const socket = desktopSocket();
+    await new Promise<void>((ready, fail) => {
+      socket.once('open', () => ready());
+      socket.once('error', fail);
     });
     const request = (id: string, method: string, params: unknown): Promise<Record<string, unknown>> => {
       const { promise, resolve } = Promise.withResolvers<Record<string, unknown>>();
-      const onMessage = (event: MessageEvent): void => {
-        const frame = JSON.parse(String(event.data)) as { id?: string };
+      const onMessage = (data: unknown): void => {
+        const frame = JSON.parse(String(data)) as { id?: string };
         if (frame.id !== id) return;
-        socket.removeEventListener('message', onMessage);
+        socket.off('message', onMessage);
         resolve(frame as Record<string, unknown>);
       };
-      socket.addEventListener('message', onMessage);
+      socket.on('message', onMessage);
       socket.send(JSON.stringify({ id, method, params }));
       return promise;
     };

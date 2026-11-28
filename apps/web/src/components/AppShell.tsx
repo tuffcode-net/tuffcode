@@ -45,7 +45,12 @@ import { Sidebar } from './sidebar/Sidebar';
 import { ThreadActionDialogs } from './thread/thread-action-dialogs';
 import { ThreadModeSwitch } from './thread/ThreadModeSwitch';
 import { shellVisibility, windowControlsInset } from './shell-layout';
-import { COMPACT_WINDOW_PX, isPhoneLayout, sidebarPresentation } from './sidebar/drawer-state';
+import {
+  COMPACT_WINDOW_PX,
+  drawerInertsShell,
+  isPhoneLayout,
+  sidebarPresentation,
+} from './sidebar/drawer-state';
 
 const CONNECTION_META: Record<ConnectionStatus, { dot: string; label: string }> = {
   connecting: { dot: 'bg-warning', label: 'Connecting' },
@@ -90,7 +95,7 @@ export function AppShell() {
   const sidebarShown = sidebar.mode === 'column';
   // The drawer is inert only while it is actually open; the phone layout itself must
   // leave the conversation interactive when the drawer is closed.
-  const drawerOpen = sidebar.mode === 'drawer' && sidebar.open;
+  const drawerOpen = drawerInertsShell(sidebar);
   const drawerRef = useRef<HTMLElement | null>(null);
 
   useNotifications();

@@ -1,7 +1,13 @@
 import { ClientRequestSchema, methods, type ThreadEventRow } from '@tuffcode/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAppStore } from '../store/app-store';
-import { createRpcClient, reconnectDelay, type EventSink, type RpcSocket } from './client';
+import {
+  HEARTBEAT_MS,
+  createRpcClient,
+  reconnectDelay,
+  type EventSink,
+  type RpcSocket,
+} from './client';
 
 class FakeSocket implements RpcSocket {
   static instances: FakeSocket[] = [];
@@ -184,6 +190,24 @@ describe('rpc client', () => {
 
     const error = await settled;
     expect(error).toMatchObject({ name: 'RpcRequestError', code: 'internal' });
+    client.close();
+  });
+
+  it('resets a socket that stops answering the health probe', async () => {
+    vi.useFakeTimers();
+    const client = createClient({ jitter: () => 0 });
+    lastSocket().open();
+    expect(client.getStatus()).toBe('open');
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+    expect(lastSocket().sent.some((frame) => frame.includes('app.health'))).toBe(true);
+
+    // A second interval with no answer means the socket is dead but the browser has
+    // not noticed; the client drops it and reconnects instead of staying "open".
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS);
+    expect(client.getStatus()).toBe('closed');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(FakeSocket.instances).toHaveLength(2);
     client.close();
   });
 
