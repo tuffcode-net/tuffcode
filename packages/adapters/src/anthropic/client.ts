@@ -94,6 +94,57 @@ export function thinkingBudget(effort: string | undefined): number | null {
   return THINKING_BUDGETS[effort] ?? null;
 }
 
+/** How a model takes thinking: the manual budget, or adaptive thinking plus effort. */
+export type ThinkingMode = 'budget' | 'adaptive';
+
+/**
+ * The generation a Claude id names, or null when the id carries no number. Version
+ * parts are one or two digits, so a date suffix is never read as one.
+ */
+function claudeVersion(model: string): { major: number; minor: number } | null {
+  const numbers = model.match(/\d+/g) ?? [];
+  const major = numbers[0] === undefined ? Number.NaN : Number(numbers[0]);
+  if (!Number.isInteger(major)) return null;
+  const second = numbers[1];
+  const minor = second !== undefined && second.length <= 2 ? Number(second) : 0;
+  return { major, minor };
+}
+
+/**
+ * Which thinking shape a model accepts. Claude 4.7 and later reject
+ * `{type:'enabled', budget_tokens}` with a 400 and take adaptive thinking with an
+ * effort level instead; 4.5 and earlier take only the manual budget and reject
+ * adaptive; 4.6 accepts both, and adaptive is the documented preference. An id with
+ * no version keeps the manual shape, so an unknown gateway alias behaves as before.
+ */
+export function thinkingMode(model: string): ThinkingMode {
+  const version = claudeVersion(model);
+  if (version === null) return 'budget';
+  if (version.major > 4) return 'adaptive';
+  if (version.major === 4 && version.minor >= 6) return 'adaptive';
+  return 'budget';
+}
+
+/**
+ * The effort level to send for adaptive thinking. Our levels collapse onto Anthropic's
+ * low, medium, high, xhigh and max; xhigh falls back to high on the models that lack
+ * it, and an unknown level returns null so the model default applies.
+ */
+export function adaptiveEffort(model: string, effort: string | undefined): string | null {
+  if (effort === undefined) return null;
+  if (effort === 'minimal' || effort === 'low') return 'low';
+  if (effort === 'medium') return 'medium';
+  if (effort === 'high') return 'high';
+  if (effort === 'max') return 'max';
+  if (effort === 'xhigh') {
+    const version = claudeVersion(model);
+    const supportsXhigh =
+      version !== null && (version.major > 4 || (version.major === 4 && version.minor >= 7));
+    return supportsXhigh ? 'xhigh' : 'high';
+  }
+  return null;
+}
+
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
 export interface AnthropicClientConfig {
@@ -218,10 +269,21 @@ function buildBody(
       cache_control: { type: 'ephemeral' },
     };
   }
-  const budget = thinkingBudget(request.reasoningEffort);
-  // The API needs max_tokens above the thinking budget and rejects a custom temperature
-  // while thinking is on, so both are adjusted only when a budget applies.
+  const mode = thinkingMode(request.model);
+  const effortLevel =
+    mode === 'adaptive' ? adaptiveEffort(request.model, request.reasoningEffort) : null;
+  const budget = mode === 'budget' ? thinkingBudget(request.reasoningEffort) : null;
+  // Manual thinking needs max_tokens above the budget; adaptive has no budget to clear,
+  // and both reject a custom temperature while thinking is on.
   const maxTokens = budget === null ? request.max_tokens : Math.max(request.max_tokens, budget + 4096);
+  const thinking =
+    mode === 'adaptive'
+      ? effortLevel === null
+        ? null
+        : { type: 'adaptive' as const }
+      : budget === null
+        ? null
+        : { type: 'enabled' as const, budget_tokens: budget };
   // The static head is cached on its own so a changing memory block cannot invalidate it.
   const staticSystem = request.systemStatic?.trim() ?? '';
   const cached = staticSystem.length > 0 && system.startsWith(staticSystem);
@@ -240,8 +302,9 @@ function buildBody(
     ...(tools.length > 0 ? { tools } : {}),
     stream: true,
     ...(system.length > 0 ? { system: systemPayload } : {}),
-    ...(budget !== null ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}),
-    ...(budget === null && config.temperature !== undefined
+    ...(thinking !== null ? { thinking } : {}),
+    ...(effortLevel !== null ? { output_config: { effort: effortLevel } } : {}),
+    ...(thinking === null && config.temperature !== undefined
       ? { temperature: config.temperature }
       : {}),
   };
