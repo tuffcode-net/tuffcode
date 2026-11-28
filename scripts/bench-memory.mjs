@@ -98,7 +98,7 @@ await sleep(idleSeconds);
 const after = processes();
 const totalMb = Math.round(after.reduce((sum, row) => sum + row.workingSetMb, 0) * 10) / 10;
 const chunks = chunkSizes();
-const initial = chunks.filter((chunk) => /^index-/.test(chunk.file)).slice(0, 1);
+const initial = chunks.filter((chunk) => chunk.file.startsWith('index-')).slice(0, 1);
 const largest = initial[0] ?? chunks[0];
 
 const report = {
