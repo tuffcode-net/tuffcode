@@ -73,6 +73,12 @@ describe('db migrations', () => {
       ]) {
         expect(modelColumns).toContain(column);
       }
+
+      const commentColumns = db
+        .prepare('PRAGMA table_info(review_comments)')
+        .all()
+        .map((row) => row['name']);
+      expect(commentColumns).toContain('delivered_at');
     } finally {
       db.close();
     }
@@ -247,8 +253,18 @@ describe('db migrations', () => {
         now,
         now,
       );
+      insert(
+        'INSERT INTO review_comments (id, thread_id, file_path, line, side, body, resolved, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
+        'rc_old',
+        'thr_old',
+        'src/a.ts',
+        '1',
+        'new',
+        'old comment',
+        now,
+      );
 
-      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 18]);
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 17, 18]);
       // A second start must be a no-op, not a re-run that fails on an existing column.
       expect(migrate(db)).toEqual([]);
 
@@ -260,6 +276,9 @@ describe('db migrations', () => {
       expect(db.prepare('SELECT content, attachments FROM messages').get()).toEqual({
         content: 'old prompt',
         attachments: null,
+      });
+      expect(db.prepare('SELECT delivered_at FROM review_comments').get()).toEqual({
+        delivered_at: null,
       });
       expect(
         db

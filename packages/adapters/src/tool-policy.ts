@@ -16,7 +16,11 @@ import {
   type ToolSchema,
 } from '@tuffcode/prompt';
 import { resolveWithin } from '@tuffcode/shared';
-import { classifyTool, isDestructiveCommand, isReadOnlyCommand } from './openai/tools.js';
+import {
+  classifyTool,
+  isDestructiveCommand,
+  readOnlyCommandRefusal,
+} from './openai/tools.js';
 
 /** A file tool, the delegation tool, or a server-owned extra tool. */
 export type HarnessToolSchema =
@@ -196,12 +200,9 @@ export function profileAllows(
       return { allowed: false, reason: 'bash is not offered to this agent' };
     }
     const command = typeof args.command === 'string' ? args.command : '';
-    if (profile.bash === 'read-only' && !isReadOnlyCommand(command)) {
-      return {
-        allowed: false,
-        reason:
-          'bash only runs read-only commands for this agent; ' + quoted(command) + ' is refused',
-      };
+    if (profile.bash === 'read-only') {
+      const refusal = readOnlyCommandRefusal(command);
+      if (refusal !== null) return { allowed: false, reason: refusal };
     }
     if (profile.bash === 'worktree' && isDestructiveCommand(command)) {
       return {

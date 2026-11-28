@@ -19,6 +19,7 @@ import {
 } from '@tuffcode/prompt';
 import { applyEol, dominantEol, normalizeEol, resolveWithin, type Eol } from '@tuffcode/shared';
 import { isExtraToolName } from '../extra-tools.js';
+import { scanShellCommand, shellFamiliesFor, type ShellFamily } from './readonly-shell.js';
 
 const MAX_OUTPUT = 64 * 1024;
 const MAX_READ_LINES = 2000;
@@ -191,9 +192,9 @@ export function classifyExtraTool(
   }
   if (name === 'skill') return 'allow';
   if (name === 'web_fetch') {
-    // A fetch reaches the network, so it follows the bash ladder.
+    // A fetch reaches the network and leaves the repository, so ask until full-auto.
     if (mode === 'read-only') return 'deny';
-    return mode === 'ask' ? 'approve' : 'allow';
+    return mode === 'ask' || mode === 'accept-edits' ? 'approve' : 'allow';
   }
   const action = typeof args.action === 'string' ? args.action : '';
   if (ACTIONLESS_EXTRA_TOOLS[name] !== true && !EXTRA_TOOL_ACTIONS[name].includes(action)) {
@@ -207,6 +208,8 @@ export function classifyExtraTool(
     if (name === 'memory') return 'allow';
     return 'approve';
   }
+  // `config` writes provider rows and settings, so even full-auto shows one approval.
+  if (name === 'config') return 'approve';
   return 'allow';
 }
 
@@ -377,19 +380,17 @@ function isReadOnlyRipgrep(tokens: readonly string[]): boolean {
   return true;
 }
 
-function isReadOnlySegment(segment: string): boolean {
-  const tokens = segment.split(/\s+/).filter((token) => token.length > 0);
+function isReadOnlySegment(tokens: readonly string[]): boolean {
   const first = tokens[0];
-  if (first === undefined) return false;
+  if (first === undefined || first.length === 0) return false;
   // FOO=bar cmd runs cmd with a changed environment, which the allowlist cannot see.
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return false;
   for (const token of tokens) {
-    const bare = token
-      .replace(/^[(&]+/, '')
-      .replace(/[)]+$/, '')
-      .toLowerCase();
+    const bare = token.toLowerCase();
     if (FORBIDDEN_WORDS[bare] === true) return false;
     if (POWERSHELL_MUTATION_VERB.test(bare)) return false;
+    // -c sets a config, an encoded command, or a count, none of which is safe to guess at.
+    if (token === '-c' || token === '--%') return false;
   }
   const program = first.toLowerCase();
   // A path is a different binary with a familiar name, so only bare program names count.
@@ -408,28 +409,55 @@ function isReadOnlySegment(segment: string): boolean {
   return false;
 }
 
+const READ_ONLY_PROGRAM_LIST = Object.keys(READ_ONLY_PROGRAMS).join(', ');
+const READ_ONLY_POWERSHELL_LIST = Object.keys(READ_ONLY_POWERSHELL_PROGRAMS).join(', ');
+const READ_ONLY_GIT_LIST = `git ${Object.keys(GIT_READ_SUBCOMMANDS).join('/')}`;
+
 /**
- * Whether a shell command only reads. Every segment of a chain must be a conservative
- * allowlisted program, and the whole line is refused before that when it can redirect,
- * substitute, group, assign an environment, or reach a known writing verb. The allowlist
- * is the security boundary; the denials only narrow it further.
+ * Whether a command only reads when `shell` runs it. The allowlist is shared across
+ * shells; the shell decides how the line splits into words and segments, and anything
+ * its grammar cannot resolve with certainty is refused.
  */
-export function isReadOnlyCommand(command: string): boolean {
+export function isReadOnlyCommandFor(
+  command: string,
+  shell: ShellFamily,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
   if (typeof command !== 'string') return false;
   const normalized = command.replace(/\r\n?/g, '\n').trim();
   if (normalized.length === 0) return false;
-  // Redirects, process substitution, grouping and PowerShell script blocks.
-  if (/[<>()`{}]/.test(normalized)) return false;
-  if (normalized.includes('--%')) return false;
-  // -c sets a config, an encoded command, or a count, none of which is safe to guess at.
-  if (/(^|\s)-c(?=\s|$)/.test(normalized)) return false;
   if (GIT_GLOBAL_FLAGS.some((flag) => normalized.includes(flag))) return false;
-  const segments = normalized.split(/&&|\|\||[;|&\n]/);
-  if (segments.length === 0) return false;
-  return segments.every((segment) => {
-    const trimmed = segment.trim();
-    return trimmed.length > 0 && isReadOnlySegment(trimmed);
-  });
+  const scan = scanShellCommand(normalized, shell, platform);
+  if ('failure' in scan) return false;
+  if (scan.segments.length === 0) return false;
+  return scan.segments.every((segment) => segment.length > 0 && isReadOnlySegment(segment));
+}
+
+/**
+ * Why a read-only turn refused a command, or null when the command only reads. The
+ * allowlist is the security boundary; the message names it, the null device for this
+ * platform, and the one merge that is still allowed, so a child can correct its command
+ * instead of guessing.
+ */
+export function readOnlyCommandRefusal(command: string): string | null {
+  const allowed =
+    `bash only runs read-only commands for this agent. Allowed: ${READ_ONLY_PROGRAM_LIST}, ` +
+    `${READ_ONLY_POWERSHELL_LIST}, ${READ_ONLY_GIT_LIST}, rg, find and grep. ` +
+    `Stderr may be merged with 2>&1 or discarded with ${process.platform === 'win32' ? '2>NUL' : '2>/dev/null'}; ` +
+    'every other redirect is refused.';
+  if (!isReadOnlyCommand(command)) return allowed;
+  return null;
+}
+
+/**
+ * Whether a shell command only reads under every shell this platform can spawn. On
+ * Windows that is PowerShell and cmd, because the resolved shell depends on what is
+ * installed; elsewhere it is bash.
+ */
+export function isReadOnlyCommand(command: string): boolean {
+  return shellFamiliesFor(process.platform).every((shell) =>
+    isReadOnlyCommandFor(command, shell, process.platform),
+  );
 }
 
 export function classifyTool(

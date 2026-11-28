@@ -120,7 +120,13 @@ test('pairs a phone, registers the worker and drives a turn', async ({ page }) =
   await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
     waitUntil: 'domcontentloaded',
   });
-  await page.getByTestId('composer-input').fill('Say hello');
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 20_000,
+  });
+  const input = page.getByTestId('composer-input');
+  await expect(input).toBeEnabled({ timeout: 20_000 });
+  await input.fill('Say hello');
+  await expect(input).toHaveValue('Say hello', { timeout: 5_000 });
   await page.getByTestId('composer-send').click();
   await expect(
     page.getByTestId('assistant-message').filter({ hasText: 'Hello from the mock provider.' }).last(),
@@ -132,7 +138,13 @@ test('stops a running turn from the phone', async ({ page }) => {
   await page.goto(served('/project/' + state().projectId + '/thread/' + state().threadId), {
     waitUntil: 'domcontentloaded',
   });
-  await page.getByTestId('composer-input').fill('SLOW please count');
+  await expect(page.getByTestId('connection-status')).toHaveAttribute('data-status', 'open', {
+    timeout: 20_000,
+  });
+  const input = page.getByTestId('composer-input');
+  await expect(input).toBeEnabled({ timeout: 20_000 });
+  await input.fill('SLOW please count');
+  await expect(input).toHaveValue('SLOW please count', { timeout: 5_000 });
   await page.getByTestId('composer-send').click();
   const stop = page.getByRole('button', { name: 'Stop' });
   await expect(stop).toBeVisible({ timeout: 20_000 });
