@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { assemblePrompt } from '@tuffcode/prompt';
 import type {
   AdapterDeps,
   AdapterLogger,
@@ -88,7 +89,7 @@ const deps: AdapterDeps = {
   subagentControl: async () => '',
 };
 
-function contextFor(profile: ToolProfile): TurnContext {
+function contextFor(profile: ToolProfile | undefined): TurnContext {
   return {
     turnId: 'turn-1',
     cwd: '/wt',
@@ -100,7 +101,7 @@ function contextFor(profile: ToolProfile): TurnContext {
     vision: false,
     signal: new AbortController().signal,
     toolOptions: ALL_SERVER_TOOLS,
-    toolProfile: profile,
+    ...(profile === undefined ? {} : { toolProfile: profile }),
   };
 }
 
@@ -162,4 +163,49 @@ describe('tool surface parity per subagent role', () => {
       expect(specs.toSorted()).toEqual(expected.toSorted());
     });
   }
+});
+
+/**
+ * Main and the three council roles run with no ToolProfile at all: `turnToolPolicy`
+ * gives a council thread every tool and no allowlist, and its children are provisioned
+ * with the same policy. They must therefore see the full surface on every adapter and
+ * keep the main prompt, with the skills sections a child loses.
+ */
+describe('roles without a profile: main, council planner, task and review', () => {
+  it('offers the full tool set on all three adapters', () => {
+    const names = allowedToolSchemas(undefined, ALL_SERVER_TOOLS).map((schema) => schema.name);
+    expect(names).toContain('config');
+    expect(names).toContain('skill');
+    expect(toOpenAITools(undefined, ALL_SERVER_TOOLS).map(wireName)).toEqual(names);
+    expect(toAnthropicTools(undefined, ALL_SERVER_TOOLS).map(wireName)).toEqual(names);
+    const specs = tuffcodeToolSpecs(deps, contextFor(undefined)).map((spec) => spec.name);
+    const expected = names.filter((name) => SERVER_TOOLS[name] === true);
+    expect(specs.toSorted()).toEqual(expected.toSorted());
+  });
+
+  it('keeps the main prompt and its skills for council threads', () => {
+    const turnContext = {
+      date: '2026-01-01',
+      mode: 'work' as const,
+      cwd: '/wt',
+      projectName: 'project',
+      brainSlice: '',
+    };
+    const main = assemblePrompt({
+      role: 'main',
+      skills: 'skill body',
+      turnContext,
+      userMessage: 'go',
+    });
+    const child = assemblePrompt({
+      role: 'child',
+      skills: 'skill body',
+      turnContext,
+      userMessage: 'go',
+    });
+    expect(main.sections.map((entry) => entry.name)).toContain('skills');
+    expect(child.sections.map((entry) => entry.name)).not.toContain('skills');
+    expect(child.systemPrompt).toContain('subagent working for a parent agent');
+    expect(main.systemPrompt).not.toContain('subagent working for a parent agent');
+  });
 });
