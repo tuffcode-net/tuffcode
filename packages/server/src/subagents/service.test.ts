@@ -8,6 +8,7 @@ import {
 } from '@tuffcode/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { SUBAGENT_RUN_MINUTES } from '@tuffcode/prompt';
+import { createRunningBudget, type RunningBudget } from '../budget.js';
 import { openDb } from '../db/index.js';
 import { createRepos } from '../db/repos/index.js';
 import { createEventBus, type EventBus } from '../events.js';
@@ -202,6 +203,7 @@ interface Harness {
   runner: FakeRunner;
   ports: FakePorts;
   subagents: Subagents;
+  budget: RunningBudget;
   events: ServerEvent[];
   dispose(): Promise<void>;
 }
@@ -217,17 +219,20 @@ function createHarness(options: { concurrency?: number } = {}): Harness {
   bus.subscribe((event) => events.push(event));
   const ports = new FakePorts(ctx);
   const runner = fakeRunner();
+  const budget = createRunningBudget(() => ctx.repos.settings.get().subagentConcurrency);
   const subagents = createSubagents({
     repos: ctx.repos,
     bus,
     runner,
     logger: silentLogger(),
     settings: () => ctx.repos.settings.get(),
+    budget,
     ports,
   });
   return {
     ctx,
     bus,
+    budget,
     runner,
     ports,
     subagents,
@@ -425,6 +430,7 @@ describe('subagent service', () => {
         runner: fakeRunner(),
         logger: silentLogger(),
         settings: () => ctx.repos.settings.get(),
+        budget: createRunningBudget(() => ctx.repos.settings.get().subagentConcurrency),
         ports: { runTurn: (input) => ports.runTurn(input) },
       });
       const { childId } = await subagents.spawn({
@@ -442,6 +448,61 @@ describe('subagent service', () => {
       expect(child.worktreePath === null ? false : existsSync(child.worktreePath)).toBe(true);
       expect(child.branch).toBe(`tuffcode/${child.id}`);
       expect(child.reasoningEffort).toBe('high');
+      // The worker wrote nothing, so the empty checkout is reclaimed on settle.
+      const worktreePath = child.worktreePath ?? '';
+      await vi.waitFor(() => expect(existsSync(worktreePath)).toBe(false), { timeout: 15_000 });
+      await subagents.dispose();
+    } finally {
+      ctx.dispose();
+    }
+  });
+
+  it('keeps a worker checkout that holds work and reclaims an empty one', async () => {
+    const ctx = createTestContext();
+    try {
+      const repoPath = join(ctx.env.root, 'repo');
+      initRepo(repoPath);
+      const { thread } = await createProjectThread(ctx.repos, repoPath);
+      const ports = new FakePorts(ctx);
+      const subagents = createSubagents({
+        repos: ctx.repos,
+        bus: createEventBus(),
+        runner: fakeRunner(),
+        logger: silentLogger(),
+        settings: () => ctx.repos.settings.get(),
+        budget: createRunningBudget(() => ctx.repos.settings.get().subagentConcurrency),
+        ports: { runTurn: (input) => ports.runTurn(input) },
+      });
+
+      // A worker that leaves an edit behind keeps its checkout, so nothing is lost.
+      ports.handler = (input) => {
+        const dir = ctx.repos.threads.get(input.threadId)?.worktreePath ?? null;
+        if (dir !== null) writeFileSync(join(dir, 'work.ts'), 'export const x = 1;\n');
+        return Promise.resolve({ status: 'complete', text: 'STATUS: done\nSUMMARY: wrote work.ts' });
+      };
+      const dirty = await subagents.spawn({
+        threadId: thread.id,
+        spec: { type: 'worker', task: 'Write a file' },
+      });
+      await subagents.awaitChild(dirty.childId);
+      const dirtyPath = subagents.get(dirty.childId).childThreadId;
+      const dirtyDir = dirtyPath === null ? null : ctx.repos.threads.get(dirtyPath)?.worktreePath;
+      expect(dirtyDir ?? '').not.toBe('');
+      expect(existsSync(dirtyDir ?? '')).toBe(true);
+      expect(existsSync(join(dirtyDir ?? '', 'work.ts'))).toBe(true);
+
+      // A worker that writes nothing leaves no worktree behind.
+      ports.handler = () =>
+        Promise.resolve({ status: 'complete', text: 'STATUS: done\nSUMMARY: nothing to change' });
+      const empty = await subagents.spawn({
+        threadId: thread.id,
+        spec: { type: 'worker', task: 'Change nothing' },
+      });
+      await subagents.awaitChild(empty.childId);
+      const emptyPath = subagents.get(empty.childId).childThreadId;
+      const emptyDir = emptyPath === null ? null : ctx.repos.threads.get(emptyPath)?.worktreePath;
+      expect(emptyDir ?? '').not.toBe('');
+      await vi.waitFor(() => expect(existsSync(emptyDir ?? '')).toBe(false), { timeout: 15_000 });
       await subagents.dispose();
     } finally {
       ctx.dispose();
@@ -470,6 +531,84 @@ describe('subagent service', () => {
       expect(harness.subagents.list(PARENT_ID)).toHaveLength(5);
       expect(harness.ports.maxActive).toBe(2);
       expect(harness.subagents.list(PARENT_ID).every((view) => view.status === 'done')).toBe(true);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('shares one child budget across parents', async () => {
+    const harness = createHarness({ concurrency: 2 });
+    try {
+      harness.ports.block = true;
+      const now = new Date().toISOString();
+      const second = harness.ctx.repos.threads.create({
+        id: 'thr_second',
+        projectId: 'prj_1',
+        parentThreadId: null,
+        title: 'Second parent',
+        providerId: 'prv_main',
+        modelId: 'main-model',
+        executionMode: 'work',
+        permissionMode: 'full-auto',
+        status: 'idle',
+        worktreePath: PARENT_WORKTREE,
+        branch: null,
+        baseBranch: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // Two children under each parent, with the cap at two: only two may run in total.
+      for (let index = 0; index < 2; index += 1) {
+        await spawn(harness, 'explorer', `First parent ${String(index)}`);
+        await harness.subagents.spawn({
+          threadId: second.id,
+          spec: { type: 'explorer', task: `Second parent ${String(index)}` },
+        });
+      }
+      await until(() => harness.ports.created.length === 2);
+      expect(harness.ports.created).toHaveLength(2);
+      expect(harness.ports.maxActive).toBe(2);
+
+      harness.ports.releaseOne();
+      await until(() => harness.ports.created.length === 3);
+      expect(harness.ports.maxActive).toBe(2);
+
+      harness.ports.unblockAll();
+      await until(() => harness.ports.created.length === 4);
+      await until(() => harness.subagents.listAll().every((view) => view.status === 'done'));
+      expect(harness.ports.maxActive).toBe(2);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it('counts a resumed child against the same budget', async () => {
+    const harness = createHarness({ concurrency: 1 });
+    try {
+      harness.ports.block = true;
+      const settled = await spawn(harness, 'explorer', 'First pass');
+      harness.ports.unblockAll();
+      await harness.subagents.awaitChild(settled);
+
+      harness.ports.block = true;
+      const busy = await spawn(harness, 'explorer', 'Holds the slot');
+      await until(() => harness.ports.created.length === 2);
+      // The only slot is held, so a resume is refused with a named reason instead of
+      // starting a second child beside the running one.
+      await expect(harness.subagents.message(settled, 'Try again')).rejects.toMatchObject({
+        code: 'conflict',
+      });
+      expect(harness.ports.maxActive).toBe(1);
+
+      harness.ports.unblockAll();
+      await harness.subagents.awaitChild(busy);
+      // The slot is released just after the row settles, so wait for the budget itself.
+      await until(() => harness.budget.active() === 0);
+      await expect(harness.subagents.message(settled, 'Try again')).resolves.toMatchObject({
+        delivered: 'started',
+      });
+      harness.ports.unblockAll();
+      await harness.subagents.awaitChild(settled);
     } finally {
       await harness.dispose();
     }
@@ -613,6 +752,7 @@ describe('subagent service', () => {
       runner,
       logger: silentLogger(),
       settings: () => ctx.repos.settings.get(),
+      budget: createRunningBudget(() => ctx.repos.settings.get().subagentConcurrency),
       ports: { createChildThread: (request) => ports.createChildThread(request) },
     });
     try {
@@ -831,6 +971,7 @@ describe('subagent service', () => {
           runner: fakeRunner(),
           logger: silentLogger(),
           settings: () => repos.settings.get(),
+          budget: createRunningBudget(() => repos.settings.get().subagentConcurrency),
         });
         const views = restarted.list(PARENT_ID);
         expect(views.map((view) => view.childId)).toEqual([running, queued]);
@@ -1248,6 +1389,7 @@ describe('subagent questions, close and read', () => {
         runner: fakeRunner(),
         logger: silentLogger(),
         settings: () => ctx.repos.settings.get(),
+        budget: createRunningBudget(() => ctx.repos.settings.get().subagentConcurrency),
         ports: { runTurn: (input) => ports.runTurn(input) },
       });
       try {
@@ -1438,6 +1580,54 @@ describe('subagent questions, close and read', () => {
     }
   });
 
+  it('keeps an open question answerable after a restart', async () => {
+    const harness = createHarness();
+    try {
+      // The child asks and stays waiting; nothing answers it before the "restart".
+      harness.ports.handler = async (input) => {
+        await harness.subagents.control({
+          action: 'ask',
+          cwd: PARENT_WORKTREE,
+          threadId: input.threadId,
+          text: 'Which file should I change?',
+        });
+        return { status: 'complete', text: 'STATUS: done\nSUMMARY: changed it' };
+      };
+      await spawn(harness, 'explorer', 'map the callers');
+      await until(() => harness.subagents.openQuestions(PARENT_ID).length === 1);
+      const liveQuestionId = harness.subagents.openQuestions(PARENT_ID)[0]?.questionId ?? '';
+      const repos = harness.ctx.repos;
+      const runner = fakeRunner();
+
+      // A fresh service over the same database is what a restart leaves behind: no
+      // in-memory question map, but the rows are all there.
+      const restarted = createSubagents({
+        repos,
+        bus: createEventBus(),
+        runner,
+        logger: silentLogger(),
+        settings: () => repos.settings.get(),
+        budget: createRunningBudget(() => repos.settings.get().subagentConcurrency),
+      });
+      const listed = restarted.openQuestions(PARENT_ID);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.questionId).toBe(liveQuestionId);
+      expect(listed[0]?.text).toBe('Which file should I change?');
+
+      await restarted.answer(liveQuestionId, 'src/b.ts', 'user');
+      expect(restarted.openQuestions(PARENT_ID)).toHaveLength(0);
+      const childId = listed[0]?.childId ?? '';
+      expect(restarted.read(childId)).toContain('[answer] to child: src/b.ts');
+      // Answering twice is a not-found, not a second row.
+      await expect(restarted.answer(liveQuestionId, 'again', 'user')).rejects.toMatchObject({
+        code: 'not-found',
+      });
+      harness.ports.unblockAll();
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it('leaves a running child untouched when a subscriber goes away', async () => {
     const harness = createHarness();
     try {
@@ -1487,6 +1677,7 @@ describe('subagent questions, close and read', () => {
           runner: fakeRunner(),
           logger: silentLogger(),
           settings: () => repos.settings.get(),
+          budget: createRunningBudget(() => repos.settings.get().subagentConcurrency),
         });
         expect(restarted.recoverOrphaned()).toBe(1);
         const view = restarted.get(childId);
