@@ -12,6 +12,13 @@ export default defineConfig({
         new URL('./packages/adapters/src/index.ts', import.meta.url),
       ),
       '@tuffcode/prompt': fileURLToPath(new URL('./packages/prompt/src/index.ts', import.meta.url)),
+      '@tuffcode/ui/markdown': fileURLToPath(
+        new URL('./packages/ui/src/markdown.tsx', import.meta.url),
+      ),
+      '@tuffcode/ui/diff': fileURLToPath(new URL('./packages/ui/src/diff.tsx', import.meta.url)),
+      '@tuffcode/ui/terminal': fileURLToPath(
+        new URL('./packages/ui/src/terminal.tsx', import.meta.url),
+      ),
       '@tuffcode/ui': fileURLToPath(new URL('./packages/ui/src/index.ts', import.meta.url)),
     },
   },

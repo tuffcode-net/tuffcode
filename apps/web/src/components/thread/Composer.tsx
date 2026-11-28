@@ -11,6 +11,7 @@ import {
   Button,
   IconButton,
   Kbd,
+  PERMISSION_LABEL,
   PopoverContent,
   PopoverRoot,
   PopoverTrigger,
@@ -36,6 +37,7 @@ import {
 import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
 import { useAppStore } from '../../store/app-store';
+import { CONNECTION_META } from '../connection-meta';
 import { CouncilGoal } from '../council/CouncilGoal';
 import { CouncilStatusStrip } from '../council/CouncilStatusStrip';
 import { councilSummary } from '../council/council-goal';
@@ -81,16 +83,9 @@ import { useProjectPalette } from './use-project-palette';
 type ComposerMode = Extract<ExecutionMode, 'work' | 'plan'>;
 
 const MODE_OPTIONS: readonly SegmentedOption<ComposerMode>[] = [
-  { value: 'work', label: 'Build' },
+  { value: 'work', label: 'Work' },
   { value: 'plan', label: 'Plan' },
 ];
-
-const PERMISSION_LABEL: Record<PermissionMode, string> = {
-  'read-only': 'Read only',
-  ask: 'Ask',
-  'accept-edits': 'Auto edits',
-  'full-auto': 'Full auto',
-};
 
 /** The three everyday permission modes; read-only joins them only when it is set. */
 const PERMISSION_SEGMENTS: readonly PermissionMode[] = ['ask', 'accept-edits', 'full-auto'];
@@ -679,15 +674,42 @@ export function Composer({ thread }: ComposerProps) {
           onDrop={handleDrop}
           onDragOver={handleDragOver}
         >
+          {connection === 'open' ? null : (
+            <p
+              role="status"
+              data-testid="composer-disconnected"
+              className="px-1 pb-1 text-2xs text-warning-foreground"
+            >
+              {CONNECTION_META[connection].label}. Sending resumes when the app is connected.
+            </p>
+          )}
+
           {councilMode ? (
-            <CouncilGoal
-              value={goalInput}
-              onChange={setGoalInput}
-              onSend={() => void sendGoal()}
-              starting={council.starting}
-              canSend={canSendGoal}
-              disabled={!thread}
-            />
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <CouncilGoal
+                  value={goalInput}
+                  onChange={setGoalInput}
+                  onSend={() => void sendGoal()}
+                  starting={council.starting}
+                  canSend={canSendGoal}
+                  disabled={!thread}
+                />
+              </div>
+              {council.running ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  data-testid="council-stop"
+                  disabled={council.cancelling}
+                  onClick={() => void council.cancel()}
+                >
+                  <Square aria-hidden="true" strokeWidth={1.75} className="size-3.5" />
+                  Stop
+                </Button>
+              ) : null}
+            </div>
           ) : (
             <>
               {attachments.length > 0 ? (

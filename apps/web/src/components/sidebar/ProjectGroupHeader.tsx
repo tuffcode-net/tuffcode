@@ -7,7 +7,6 @@ const revealOnHover = cn(
   'group-hover/project:pointer-events-auto group-hover/project:opacity-100',
   'focus-visible:pointer-events-auto focus-visible:opacity-100',
   '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
-  'max-md:pointer-events-auto max-md:opacity-100',
 );
 
 const compactIcon = 'size-11 md:size-6 [&_svg]:size-4 md:[&_svg]:size-3';

@@ -71,15 +71,12 @@ export { Kbd, type KbdProps } from './kbd';
 export { Spinner, type SpinnerProps } from './spinner';
 export { EmptyState, type EmptyStateProps } from './empty-state';
 export { StatusDot, type StatusDotProps } from './status-dot';
-export { Markdown, type MarkdownProps, type MarkdownTheme } from './markdown';
-export {
-  DiffViewer,
-  type DiffFile,
-  type DiffLineComment,
-  type DiffLineContext,
-  type DiffViewerProps,
-} from './diff';
-export { Terminal, type TerminalHandle, type TerminalProps } from './terminal';
+// The renderer-heavy pieces live behind subpath exports (`@tuffcode/ui/markdown`,
+// `/diff`, `/terminal`) so importing a button does not pull Shiki, the diff viewer and
+// xterm into the initial chunk. Types are erased, so they can stay here.
+export type { MarkdownProps, MarkdownTheme } from './markdown';
+export type { DiffFile, DiffLineComment, DiffLineContext, DiffViewerProps } from './diff';
+export type { TerminalHandle, TerminalProps } from './terminal';
 export {
   TERMINAL_CURSOR_STYLE,
   TERMINAL_FONT_SIZE,
@@ -89,6 +86,7 @@ export {
   type TerminalCursorStyle,
   type TerminalOptions,
 } from './terminal-options';
+export { PERMISSION_LABEL } from './labels';
 export {
   ANSI_NAMES,
   PALETTES,

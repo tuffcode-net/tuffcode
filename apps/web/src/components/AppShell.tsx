@@ -19,7 +19,6 @@ import {
   type PointerEvent,
 } from 'react';
 import { useAppStore } from '../store/app-store';
-import type { ConnectionStatus } from '../types';
 import { InspectorPanel } from './inspector/InspectorPanel';
 import {
   EMPTY_DOCK,
@@ -44,6 +43,7 @@ import { DockToolbar } from './shell/DockToolbar';
 import { Sidebar } from './sidebar/Sidebar';
 import { ThreadActionDialogs } from './thread/thread-action-dialogs';
 import { ThreadModeSwitch } from './thread/ThreadModeSwitch';
+import { CONNECTION_META } from './connection-meta';
 import { shellVisibility, windowControlsInset } from './shell-layout';
 import {
   COMPACT_WINDOW_PX,
@@ -51,13 +51,6 @@ import {
   isPhoneLayout,
   sidebarPresentation,
 } from './sidebar/drawer-state';
-
-const CONNECTION_META: Record<ConnectionStatus, { dot: string; label: string }> = {
-  connecting: { dot: 'bg-warning', label: 'Connecting' },
-  open: { dot: 'bg-success', label: 'Connected' },
-  closed: { dot: 'bg-error', label: 'Disconnected' },
-  'protocol-error': { dot: 'bg-error', label: 'Protocol error' },
-};
 
 function windowWidth(): number {
   return typeof window === 'undefined' ? 1280 : window.innerWidth;

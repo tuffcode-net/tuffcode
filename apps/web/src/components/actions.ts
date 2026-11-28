@@ -5,6 +5,7 @@ import {
   ClipboardPaste,
   Copy,
   Eraser,
+  EyeOff,
   MessageSquarePlus,
   PencilLine,
   RotateCcw,
@@ -18,6 +19,7 @@ import type { AssistantItem, UserItem } from './thread/grouping';
 import {
   addLocalUserMessage,
   failLocalUserMessage,
+  hideLocalUserMessage,
   nextLocalUserMessageId,
   removeLocalUserMessage,
   resolveLocalUserMessage,
@@ -325,18 +327,22 @@ export const ACTIONS: Record<ActionId, ActionDefinition> = {
   },
   'message.delete': {
     id: 'message.delete',
-    label: 'Delete',
+    label: 'Hide from this session',
     shortcut: 'Del',
-    destructive: true,
-    icon: Trash,
+    // Hiding is reversible: a reload brings the row back, so it is not destructive.
+    destructive: false,
+    icon: EyeOff,
     run: (ctx) => {
       const item = ctx.userMessage;
       const threadId = ctx.threadId;
       if (item === undefined || threadId === undefined) return;
 
+      // There is no server-side message delete yet, so this hides the row for the
+      // rest of the session. The hidden id survives transcript refetches.
+      hideLocalUserMessage(threadId, item.messageId);
       removeLocalUserMessage(item.messageId);
       ctx.store.removeMessage(threadId, item.messageId);
-      ctx.notify.success('Message deleted');
+      ctx.notify.success('Hidden from this session');
     },
   },
   'message.retry': {

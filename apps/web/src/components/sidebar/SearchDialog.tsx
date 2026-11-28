@@ -1,6 +1,6 @@
 import { useNavigate } from '@tanstack/react-router';
 import type { Project, RpcResult, Thread } from '@tuffcode/contracts';
-import { DialogContent, DialogRoot, DialogTitle, Input, Kbd, cn } from '@tuffcode/ui';
+import { Button, DialogContent, DialogRoot, DialogTitle, Input, Kbd, cn } from '@tuffcode/ui';
 import { FolderGit2, MessageSquare, Search, TextSearch } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useRpc } from '../../rpc/rpc-context';
@@ -33,6 +33,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const [query, setQuery] = useState('');
   const [remote, setRemote] = useState<RpcResult<'threads.search'>>([]);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [searchAttempt, setSearchAttempt] = useState(0);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -41,6 +42,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
       setQuery('');
       setRemote([]);
       setRemoteError(null);
+      setSearchAttempt(0);
       setActive(0);
     }
   }, [open]);
@@ -70,7 +72,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, rpc]);
+  }, [query, rpc, searchAttempt]);
 
   const hits = useMemo<SearchHit[]>(() => {
     const needle = query.trim().toLowerCase();
@@ -158,52 +160,66 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
           />
           <Kbd>Esc</Kbd>
         </div>
-        <div ref={listRef} className="max-h-[60vh] overflow-y-auto p-1" role="listbox" aria-label="Results">
+        <div ref={listRef} className="max-h-[60vh] overflow-y-auto p-1">
           {remoteError !== null ? (
-            <p role="alert" className="px-3 py-3 text-center text-xs text-error-foreground">
-              Message search unavailable: {remoteError}
-            </p>
+            <div className="flex flex-col items-center gap-2 px-3 py-3">
+              <p role="alert" className="text-center text-xs text-error-foreground">
+                Message search unavailable: {remoteError}
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                data-testid="search-retry"
+                onClick={() => setSearchAttempt((attempt) => attempt + 1)}
+              >
+                Retry
+              </Button>
+            </div>
           ) : null}
           {hits.length === 0 ? (
-            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-              {query.trim().length === 0 ? 'No chats yet.' : 'No matches.'}
-            </p>
+            remoteError === null ? (
+              <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                {query.trim().length === 0 ? 'No chats yet.' : 'No matches.'}
+              </p>
+            ) : null
           ) : (
-            hits.map((hit, index) => {
-              const selected = index === active;
-              const Icon = hit.kind === 'chat' ? MessageSquare : hit.kind === 'project' ? FolderGit2 : TextSearch;
-              const title = hit.kind === 'chat' ? hit.thread.title : hit.kind === 'project' ? hit.project.name : hit.hit.title;
-              const detail =
-                hit.kind === 'chat' ? (hit.project?.name ?? '') : hit.kind === 'project' ? hit.project.path : hit.hit.snippet;
-              return (
-                <button
-                  key={hit.key}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  data-index={index}
-                  data-testid={`search-hit-${hit.kind}`}
-                  onMouseEnter={() => setActive(index)}
-                  onClick={() => choose(hit)}
-                  className={cn(
-                    'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2 text-left',
-                    selected ? 'bg-accent' : 'hover:bg-accent/60',
-                  )}
-                >
-                  <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-sm text-foreground" title={title}>
-                      {title}
-                    </span>
-                    {detail.length > 0 ? (
-                      <span className="truncate text-2xs text-muted-foreground" title={detail}>
-                        {detail}
+            <div role="listbox" aria-label="Results">
+              {hits.map((hit, index) => {
+                const selected = index === active;
+                const Icon = hit.kind === 'chat' ? MessageSquare : hit.kind === 'project' ? FolderGit2 : TextSearch;
+                const title = hit.kind === 'chat' ? hit.thread.title : hit.kind === 'project' ? hit.project.name : hit.hit.title;
+                const detail =
+                  hit.kind === 'chat' ? (hit.project?.name ?? '') : hit.kind === 'project' ? hit.project.path : hit.hit.snippet;
+                return (
+                  <button
+                    key={hit.key}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    data-index={index}
+                    data-testid={`search-hit-${hit.kind}`}
+                    onMouseEnter={() => setActive(index)}
+                    onClick={() => choose(hit)}
+                    className={cn(
+                      'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2 text-left',
+                      selected ? 'bg-accent' : 'hover:bg-accent/60',
+                    )}
+                  >
+                    <Icon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-sm text-foreground" title={title}>
+                        {title}
                       </span>
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })
+                      {detail.length > 0 ? (
+                        <span className="truncate text-2xs text-muted-foreground" title={detail}>
+                          {detail}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
       </DialogContent>

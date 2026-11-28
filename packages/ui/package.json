@@ -5,7 +5,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./tokens.css": "./src/tokens.css"
+    "./tokens.css": "./src/tokens.css",
+    "./markdown": "./src/markdown.tsx",
+    "./diff": "./src/diff.tsx",
+    "./terminal": "./src/terminal.tsx"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"

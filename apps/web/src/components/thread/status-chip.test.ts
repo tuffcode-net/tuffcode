@@ -6,22 +6,22 @@ describe('statusChip', () => {
     expect(statusChip('running')).toMatchObject({
       label: 'Running',
       tone: 'running',
-      className: 'bg-sky-400/10 text-sky-400',
+      className: 'bg-info/10 text-info-foreground',
     });
     expect(statusChip('needs-approval')).toMatchObject({
       label: 'Needs approval',
       tone: 'warning',
-      className: 'bg-amber-400/10 text-amber-400',
+      className: 'bg-warning/10 text-warning-foreground',
     });
     expect(statusChip('ready-to-review')).toMatchObject({
       label: 'Ready to review',
       tone: 'success',
-      className: 'bg-emerald-400/10 text-emerald-400',
+      className: 'bg-success/10 text-success-foreground',
     });
     expect(statusChip('failed')).toMatchObject({
       label: 'Failed',
       tone: 'error',
-      className: 'bg-red-400/10 text-red-400',
+      className: 'bg-error/10 text-error-foreground',
     });
     expect(statusChip('idle')).toMatchObject({
       label: 'Idle',
@@ -34,6 +34,7 @@ describe('statusChip', () => {
     expect(statusChip('merged').tone).toBe('success');
     expect(statusChip('closed').tone).toBe('neutral');
     expect(statusChip('plan-ready')).toMatchObject({ label: 'Plan ready', tone: 'plan' });
+    expect(statusChip('plan-ready').className).toContain('text-plan-foreground');
   });
 
   it('gives every chip a 10 percent tinted background', () => {

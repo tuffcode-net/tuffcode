@@ -209,9 +209,8 @@ export function Timeline({
   return (
     <div
       ref={scrollRef}
-      role="log"
+      role="region"
       aria-label="Thread timeline"
-      aria-live="polite"
       className="min-h-0 flex-1 scroll-pt-3 overflow-y-auto overscroll-contain py-4"
       onScroll={() => {
         const element = scrollRef.current;
