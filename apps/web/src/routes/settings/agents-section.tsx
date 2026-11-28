@@ -33,14 +33,12 @@ import { SaveBar } from '../../components/settings/save-bar';
 import { SettingsRow } from '../../components/settings/settings-row';
 import { SettingsSectionHeader } from '../../components/settings/settings-section-header';
 import { SettingsSlider } from '../../components/settings/settings-slider';
-import { shellFieldError } from '../../components/settings/settings-draft';
 import { TOOL_CATALOG, toggleEnabledTool } from '../../components/settings/tool-catalog';
 import { useSettingsDraft } from '../../components/settings/use-settings-draft';
 import { useAppStore } from '../../store/app-store';
 
 const KEYS = [
   'enabledTools',
-  'shell',
   'subagentModels',
   'subagentConcurrency',
   ...CONTEXT_SETTING_KEYS,
@@ -133,10 +131,9 @@ export function AgentsSection() {
   const providers = useAppStore((state) => state.providers);
 
   const enabledTools = draft?.enabledTools ?? [];
-  const shellMessage = draft ? shellFieldError(draft.shell ?? '') : undefined;
   const toolsMessage = enabledTools.length === 0 ? 'Enable at least one tool.' : undefined;
   const outputTokensMessage = maxOutputTokensError(draft?.maxOutputTokens ?? 8192);
-  const invalid = Boolean(shellMessage ?? toolsMessage ?? outputTokensMessage);
+  const invalid = Boolean(toolsMessage ?? outputTokensMessage);
   const subagentModels = draft?.subagentModels;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>): void {
@@ -148,7 +145,7 @@ export function AgentsSection() {
     <form className="flex flex-1 flex-col gap-4" onSubmit={handleSubmit}>
       <SettingsSectionHeader
         title="Agents and tools"
-        description="What the built-in harness may call in a thread, how long it may keep calling, and the shell it runs commands in. Vendor CLIs keep their own tool sets."
+        description="What the built-in harness may call in a thread and how long it may keep calling. The terminal section sets the shell. Vendor CLIs keep their own tool sets."
       />
 
       <Card>
@@ -213,24 +210,6 @@ export function AgentsSection() {
               max={SUBAGENT_CONCURRENCY_MAX}
               unit="agents"
               onChange={(subagentConcurrency) => update({ subagentConcurrency })}
-            />
-          </SettingsRow>
-
-          <SettingsRow
-            label="Shell"
-            htmlFor="agents-shell"
-            description="Executable used for the bash tool and the terminal. Leave blank for the system default."
-            error={shellMessage}
-          >
-            <Input
-              id="agents-shell"
-              data-testid="settings-shell"
-              value={draft?.shell ?? ''}
-              onChange={(event) => update({ shell: event.target.value })}
-              placeholder="pwsh.exe"
-              spellCheck={false}
-              aria-invalid={Boolean(shellMessage)}
-              aria-describedby={shellMessage ? 'agents-shell-error' : undefined}
             />
           </SettingsRow>
         </div>
