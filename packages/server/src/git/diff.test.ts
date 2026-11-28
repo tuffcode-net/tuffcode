@@ -59,6 +59,36 @@ describe('git diff', () => {
     expect(readmeDiff?.patch).not.toContain('+second line');
   });
 
+  it('is empty right after a checkpoint captured an untracked file', async () => {
+    writeFileSync(readme, '# demo\nsecond line\n');
+    writeFileSync(join(worktree, 'added.txt'), 'captured\n');
+    const checkpoint = await createCheckpoint(ctx.repos, setup.thread.id, 'captures added.txt');
+
+    const scoped = await getDiff(ctx.repos, setup.thread.id, checkpoint.id);
+    expect(scoped).toEqual([]);
+  });
+
+  it('reports a captured untracked file as modified once it changes', async () => {
+    writeFileSync(join(worktree, 'added.txt'), 'captured\n');
+    const checkpoint = await createCheckpoint(ctx.repos, setup.thread.id, 'captures added.txt');
+    writeFileSync(join(worktree, 'added.txt'), 'captured\nmore\n');
+
+    const scoped = await getDiff(ctx.repos, setup.thread.id, checkpoint.id);
+    const changed = scoped.find((file) => file.path === 'added.txt');
+    expect(changed?.status).toBe('modified');
+    expect(changed?.additions).toBe(1);
+    expect(changed?.patch).toContain('+more');
+  });
+
+  it('still lists files created after the checkpoint as untracked', async () => {
+    writeFileSync(join(worktree, 'added.txt'), 'captured\n');
+    const checkpoint = await createCheckpoint(ctx.repos, setup.thread.id, 'captures added.txt');
+    writeFileSync(join(worktree, 'later.txt'), 'later\n');
+
+    const scoped = await getDiff(ctx.repos, setup.thread.id, checkpoint.id);
+    expect(scoped.map((file) => [file.path, file.status])).toEqual([['later.txt', 'untracked']]);
+  });
+
   it('reports deletions and binary files', async () => {
     rmSync(readme);
     writeFileSync(join(worktree, 'image.bin'), Buffer.from([0, 1, 2, 3, 0]));
