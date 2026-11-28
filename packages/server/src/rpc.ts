@@ -6,6 +6,7 @@ import {
   type EventRow,
   type RpcMethod,
   type RpcParams,
+  type PermissionMode,
   type RpcResult,
   type ServerResponse,
   type Thread,
@@ -45,6 +46,11 @@ import { createProviderHandlers } from './providers/rpc.js';
 import type { ProvidersService } from './providers/service.js';
 import { createRunnerHandlers } from './runner/rpc.js';
 import type { Runner } from './runner/runner.js';
+import {
+  isRemoteMethodAllowed,
+  remoteRequestViolation,
+  type RemotePrincipal,
+} from './remote-policy.js';
 import { createSubagentHandlers } from './subagents/rpc.js';
 import type { Subagents } from './subagents/types.js';
 import {
@@ -251,15 +257,41 @@ export function errorResponse(id: string, error: unknown): ServerResponse {
   return { id, ok: false, error: { code: 'internal', message: 'internal error' } };
 }
 
+export interface DispatchContext {
+  /** Who opened the socket. A paired phone is `remote` and is allowlisted. */
+  readonly principal: RemotePrincipal;
+  /** The desktop default, so a remote thread cannot start wider than it. */
+  readonly defaultPermissionMode: PermissionMode;
+}
+
+const DESKTOP_CONTEXT: DispatchContext = {
+  principal: 'desktop',
+  defaultPermissionMode: 'full-auto',
+};
+
 /**
  * Validates params, runs the handler, validates the result. Unknown methods and bad
  * params are `bad-request`; a handler that returns something off-contract is
  * `internal`, which surfaces a server bug instead of shipping malformed data.
+ *
+ * A remote principal is checked against the allowlist before anything else runs, and
+ * against the per method parameter guards after the params parse.
  */
 export async function dispatch(
   handlers: RpcHandlers,
   request: ClientRequest,
+  context: DispatchContext = DESKTOP_CONTEXT,
 ): Promise<ServerResponse> {
+  if (context.principal === 'remote' && !isRemoteMethodAllowed(request.method)) {
+    return {
+      id: request.id,
+      ok: false,
+      error: {
+        code: 'permission-denied',
+        message: `a paired device cannot call ${request.method}`,
+      },
+    };
+  }
   const handler = handlers.get(request.method);
   const definition = definitions[request.method];
   if (handler === undefined || definition === undefined) {
@@ -283,6 +315,14 @@ export async function dispatch(
         })),
       },
     };
+  }
+  if (context.principal === 'remote') {
+    const violation = remoteRequestViolation(request.method, params.data, {
+      defaultPermissionMode: context.defaultPermissionMode,
+    });
+    if (violation !== undefined) {
+      return { id: request.id, ok: false, error: violation };
+    }
   }
   try {
     const result = await handler(params.data);

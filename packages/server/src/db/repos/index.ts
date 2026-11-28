@@ -11,6 +11,10 @@ import { createMessagesRepo, type MessagesRepo } from './messages.js';
 import { createPluginsRepo, type PluginsRepo } from './plugins.js';
 import { createProjectsRepo, type ProjectsRepo } from './projects.js';
 import { createProvidersRepo, type ProvidersRepo } from './providers.js';
+import {
+  createRemoteSessionsRepo,
+  type RemoteSessionsRepo,
+} from './remote-sessions.js';
 import { createSettingsRepo, type SettingsRepo } from './settings.js';
 import { createSubagentsRepo, type SubagentsRepo } from './subagents.js';
 import { createThreadsRepo, type ThreadsRepo } from './threads.js';
@@ -34,6 +38,7 @@ export interface Repos {
   settings: SettingsRepo;
   todos: TodosRepo;
   plugins: PluginsRepo;
+  remoteSessions: RemoteSessionsRepo;
   /** Runs `fn` in a transaction on the shared connection; nesting is rejected. */
   transaction<T>(fn: () => T): T;
 }
@@ -57,6 +62,7 @@ export function createRepos(db: DatabaseSync): Repos {
     settings: createSettingsRepo(db),
     todos: createTodosRepo(db),
     plugins: createPluginsRepo(db),
+    remoteSessions: createRemoteSessionsRepo(db),
     transaction: (fn) => transaction(db, fn),
   };
 }
@@ -93,6 +99,11 @@ export type {
   UpsertProviderInput,
 } from './providers.js';
 export type { SettingsRepo } from './settings.js';
+export type {
+  CreateRemoteSessionInput,
+  RemoteSessionRecord,
+  RemoteSessionsRepo,
+} from './remote-sessions.js';
 export type {
   AddSubagentMessageInput,
   AddSubagentReportInput,

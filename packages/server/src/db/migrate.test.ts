@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTempEnv, type TempEnv } from '../test-support.js';
+import { createRepos } from './repos/index.js';
 import { MIGRATIONS, migrate, openDb, transaction } from './index.js';
 
 describe('db migrations', () => {
@@ -15,14 +16,14 @@ describe('db migrations', () => {
     env = createTempEnv();
     const db = openDb(join(env.root, 'tuffcode.db'));
     try {
-      expect(migrate(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+      const expected = MIGRATIONS.map((entry) => entry.version);
+      expect(migrate(db)).toEqual(expected);
       expect(migrate(db)).toEqual([]);
 
       const versions = db.prepare('SELECT version FROM schema_migrations').all();
-      expect(versions).toHaveLength(17);
-      expect(versions.map((row) => row['version'])).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
-      ]);
+      expect(versions).toHaveLength(expected.length);
+      expect(versions.map((row) => row['version'])).toEqual(expected);
+      expect(expected.at(-1)).toBe(18);
 
       expect(db.prepare('PRAGMA journal_mode').get()?.['journal_mode']).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.['foreign_keys']).toBe(1);
@@ -263,7 +264,7 @@ describe('db migrations', () => {
         now,
       );
 
-      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 17]);
+      expect(migrate(db)).toEqual([12, 13, 14, 15, 16, 17, 18]);
       // A second start must be a no-op, not a re-run that fails on an existing column.
       expect(migrate(db)).toEqual([]);
 
@@ -310,6 +311,54 @@ describe('db migrations', () => {
       expect(db.prepare('SELECT COUNT(*) AS total FROM mcp_servers').get()?.['total']).toBe(1);
       expect(db.prepare('SELECT COUNT(*) AS total FROM brain_entries').get()?.['total']).toBe(1);
       expect(db.prepare('SELECT COUNT(*) AS total FROM subagent_reports').get()?.['total']).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds the remote session tables to a database that already holds data', () => {
+    env = createTempEnv();
+    const db = openDb(join(env.root, 'upgrade-remote.db'));
+    try {
+      const now = new Date().toISOString();
+      const remoteMigration = MIGRATIONS.find((entry) => entry.name === 'remote-access');
+      if (remoteMigration === undefined) throw new Error('the remote migration is missing');
+      for (const migration of MIGRATIONS.filter((entry) => entry.name !== 'remote-access')) {
+        db.exec(migration.sql);
+        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+          migration.version,
+          now,
+        );
+      }
+      db.prepare(
+        'INSERT INTO projects (id, name, path, default_branch, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('prj_keep', 'Keep me', 'C:/work/keep', 'main', now);
+      db.prepare(
+        `INSERT INTO threads (id, project_id, title, provider_id, model_id, execution_mode, permission_mode, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run('thr_keep', 'prj_keep', 'Existing chat', 'prv_keep', 'model', 'work', 'ask', 'idle', now, now);
+      db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)').run(
+        'theme',
+        JSON.stringify('light'),
+        now,
+      );
+
+      expect(migrate(db)).toEqual([remoteMigration.version]);
+      expect(db.prepare('SELECT name FROM projects WHERE id = ?').get('prj_keep')?.['name']).toBe(
+        'Keep me',
+      );
+      expect(db.prepare('SELECT title FROM threads WHERE id = ?').get('thr_keep')?.['title']).toBe(
+        'Existing chat',
+      );
+      expect(
+        JSON.parse(
+          String(db.prepare('SELECT value FROM settings WHERE key = ?').get('theme')?.['value']),
+        ),
+      ).toBe('light');
+      expect(db.prepare('SELECT COUNT(*) AS n FROM remote_sessions').get()?.['n']).toBe(0);
+      const repos = createRepos(db);
+      expect(repos.remoteSessions.list()).toEqual([]);
+      expect(repos.remoteSessions.tokenFingerprint()).toBeUndefined();
     } finally {
       db.close();
     }

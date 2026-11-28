@@ -1,9 +1,29 @@
 export interface BootstrapInfo {
   port: number;
-  token: string;
+  /** Bearer token from the desktop preload. Absent in a browser, where the socket
+   * authenticates with the session cookie the served origin set. */
+  token?: string;
   version: string;
   platform: string;
-  home: string;
+  /** Desktop home directory. The served bootstrap does not report it. */
+  home?: string;
+  /** True when a paired device opened this page, so desktop-only surfaces hide. */
+  remote?: boolean;
+  /** The name the paired device chose, shown in the desktop device list. */
+  deviceName?: string;
+}
+
+/** The `GET /bootstrap` payload a served origin returns to a browser. */
+export interface BootstrapResponse {
+  port: number;
+  version: string;
+  platform: string;
+  home?: string;
+  /** Socket path on the served origin, so a proxy can move it without a rebuild. */
+  wsPath: string;
+  token?: string;
+  remote?: boolean;
+  deviceName?: string;
 }
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed' | 'protocol-error';
@@ -32,6 +52,9 @@ export interface NotifyTestResult {
 }
 
 export interface TuffcodeBridge {
+  /** Present only on the shim main.tsx installs in a served page, so bootstrap
+   * resolution can tell a browser from the Electron preload. */
+  browser?: boolean;
   getBootstrap(): Promise<BootstrapInfo>;
   pickFolder(): Promise<string | null>;
   onMenuAction(callback: (action: string) => void): () => void;
