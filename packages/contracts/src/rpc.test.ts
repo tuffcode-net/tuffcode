@@ -230,6 +230,7 @@ const reviewComment: ReviewComment = {
   side: 'new',
   body: 'This branch needs a test.',
   resolved: false,
+  deliveredAt: null,
   createdAt: at,
 };
 
@@ -1673,6 +1674,7 @@ describe('settings', () => {
   it('parses partial patches without filling defaults', () => {
     expect(SettingsPatchSchema.parse({})).toEqual({});
     expect(SettingsPatchSchema.parse({ theme: 'light' })).toEqual({ theme: 'light' });
+    expect(SettingsPatchSchema.parse({ theme: 'nord' })).toEqual({ theme: 'nord' });
     expect(SettingsPatchSchema.parse({ fontSize: 16, cursorStyle: 'block' })).toEqual({
       fontSize: 16,
       cursorStyle: 'block',

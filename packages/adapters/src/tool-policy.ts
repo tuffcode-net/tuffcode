@@ -16,7 +16,11 @@ import {
   type ToolSchema,
 } from '@tuffcode/prompt';
 import { resolveWithin } from '@tuffcode/shared';
-import { classifyTool, isDestructiveCommand, isReadOnlyCommand } from './openai/tools.js';
+import {
+  classifyTool,
+  isDestructiveCommand,
+  readOnlyCommandRefusal,
+} from './openai/tools.js';
 
 /** A file tool, the delegation tool, or a server-owned extra tool. */
 export type HarnessToolSchema =
@@ -189,20 +193,28 @@ export function profileAllows(
   cwd: string,
 ): ProfileVerdict {
   if (!profileOffers(profile, name)) {
-    return { allowed: false, reason: 'tool "' + name + '" is not offered to this agent' };
+    const allowed = [...new Set(profile.offer.map((entry) => entry.split(':')[0] ?? entry))];
+    return {
+      allowed: false,
+      reason:
+        'tool "' + name + '" is not offered to this agent; it may use: ' + allowed.join(', '),
+    };
   }
   if (name === 'bash') {
     if (profile.bash === 'none') {
       return { allowed: false, reason: 'bash is not offered to this agent' };
     }
     const command = typeof args.command === 'string' ? args.command : '';
-    if (profile.bash === 'read-only' && !isReadOnlyCommand(command)) {
-      return {
-        allowed: false,
-        reason:
-          'bash only runs read-only commands for this agent; ' + quoted(command) + ' is refused',
-      };
+    if (profile.bash === 'read-only') {
+      const refusal = readOnlyCommandRefusal(command);
+      if (refusal !== null) return { allowed: false, reason: refusal };
     }
+    // A worker's shell is not sandboxed. It runs with cwd inside the child's worktree
+    // and refuses the destructive list above, and that is the whole boundary: a command
+    // that names another path can still write there, because the app has no OS-level
+    // confinement. The write globs bound the file tools, not the shell. The worktree is
+    // the boundary by convention, and a hard one would need platform sandboxing this
+    // agent does not have.
     if (profile.bash === 'worktree' && isDestructiveCommand(command)) {
       return {
         allowed: false,

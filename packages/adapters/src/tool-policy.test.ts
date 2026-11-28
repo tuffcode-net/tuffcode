@@ -121,11 +121,29 @@ describe('tool profile', () => {
       allowed: true,
     });
     expect(profileAllows('bash', { command: 'pnpm test' }, explorer, 'C:/wt').allowed).toBe(false);
+    const refused = profileAllows('bash', { command: 'pnpm test' }, explorer, 'C:/wt');
+    const reason = refused.allowed === false ? refused.reason : '';
+    expect(reason).toContain('git status/log/show');
+    // The hint names the null device of the shell this platform spawns, and only that one.
+    expect(reason).toContain(process.platform === 'win32' ? '2>NUL' : '2>/dev/null');
+    expect(profileAllows('bash', { command: 'git status 2>&1' }, explorer, 'C:/wt')).toEqual({
+      allowed: true,
+    });
     expect(profileAllows('bash', { command: 'git status' }, explorer, 'C:/wt')).toEqual({
       allowed: true,
     });
     const noBash: ToolProfile = { offer: ['bash'], bash: 'none' };
     expect(profileAllows('bash', { command: 'ls' }, noBash, 'C:/wt').allowed).toBe(false);
+  });
+
+  it('names the tools a child may use when one is refused', () => {
+    const verdict = profileAllows('config', { action: 'settings.set' }, explorer, 'C:/wt');
+    expect(verdict.allowed).toBe(false);
+    const reason = verdict.allowed === false ? verdict.reason : '';
+    expect(reason).toContain('is not offered to this agent; it may use:');
+    expect(reason).toContain('read');
+    expect(reason).toContain('bash');
+    expect(reason.split('it may use: ')[1] ?? '').not.toContain('config');
   });
 
   it('names the actions a child may use and refuses the rest', () => {

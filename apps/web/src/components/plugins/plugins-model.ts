@@ -77,7 +77,7 @@ const AVATAR_TONES = [
   'bg-info/20 text-info-foreground',
   'bg-success/20 text-success-foreground',
   'bg-warning/20 text-warning-foreground',
-  'bg-primary/20 text-primary',
+  'bg-primary/20 text-primary-soft',
   'bg-error/20 text-error-foreground',
 ] as const;
 

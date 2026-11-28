@@ -180,6 +180,48 @@ describe('runTurn', () => {
     expect(messages.some((message) => message.role === 'tool')).toBe(true);
   });
 
+  it('stops a turn that never finishes with a visible reason', async () => {
+    const streams = Array.from({ length: 61 }, (_unused, index) =>
+      streamOf(toolCallPayload(index)),
+    );
+    const client = new FakeClient(streams);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'loop forever' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error).toMatchObject({ type: 'error' });
+    expect(error?.type === 'error' ? error.message : '').toContain('tool steps');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
+  });
+
+  it('reports a reply cut by the output cap instead of finishing quietly', async () => {
+    const client = new FakeClient([
+      streamOf([{ choices: [{ delta: { content: 'half an ans' }, finish_reason: 'length' }] }]),
+    ]);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'go' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error?.type === 'error' ? error.message : '').toContain('output token limit');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
+  });
+
   it('runs two read-only calls of one step concurrently and keeps results in call order', async () => {
     const gates = [gate<string>(), gate<string>()];
     const started: string[] = [];

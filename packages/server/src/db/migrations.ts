@@ -463,6 +463,16 @@ const SUBAGENT_REWORK_SQL = `
 ALTER TABLE subagents ADD COLUMN rework_round INTEGER NOT NULL DEFAULT 0;
 `;
 
+/**
+ * Round 8: review comment delivery. `delivered_at` records the first turn whose prompt
+ * carried the comment, so it stops repeating without being marked resolved. NULL means
+ * the agent has not been told about it yet; a resolved comment keeps its timestamp so
+ * the two states stay distinguishable.
+ */
+const REVIEW_COMMENT_DELIVERY_SQL = `
+ALTER TABLE review_comments ADD COLUMN delivered_at TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -543,5 +553,10 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 16,
     name: 'subagent-rework-round',
     sql: SUBAGENT_REWORK_SQL,
+  },
+  {
+    version: 17,
+    name: 'review-comment-delivery',
+    sql: REVIEW_COMMENT_DELIVERY_SQL,
   },
 ];

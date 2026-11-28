@@ -582,6 +582,8 @@ export const ReviewCommentSchema = z.object({
   side: ReviewCommentSideSchema,
   body: z.string(),
   resolved: z.boolean(),
+  /** When a turn prompt first carried the comment; null while it is still unsent. */
+  deliveredAt: IsoDateTimeSchema.nullable(),
   createdAt: IsoDateTimeSchema,
 });
 export type ReviewComment = z.infer<typeof ReviewCommentSchema>;

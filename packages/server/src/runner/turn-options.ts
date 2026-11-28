@@ -31,9 +31,11 @@ export function isCouncilThread(repos: Repos, thread: Thread): boolean {
 /**
  * The subagent row whose child thread this is, or undefined for any other thread.
  * The row names the child's type, which is what its tool profile is derived from.
+ * One row by an equality lookup, not a scan of every subagent in JavaScript: this runs
+ * at the start of every turn.
  */
 export function subagentChildFor(repos: Repos, threadId: string): SubagentRecord | undefined {
-  return repos.subagents.listAll().find((record) => record.childThreadId === threadId);
+  return repos.subagents.getByChildThreadId(threadId);
 }
 
 export interface TurnToolPolicy {

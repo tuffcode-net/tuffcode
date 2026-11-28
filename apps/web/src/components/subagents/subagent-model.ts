@@ -92,51 +92,56 @@ export const SUBAGENT_CHIP_RUNNING_LIMIT = 3;
 
 /**
  * One dock chip. `child` opens the pane on that child, `more` opens the first
- * running child, and `finished` opens the last child of a settled set.
+ * running child, and `finished` opens the last child that finished cleanly.
  */
 export type SubagentChip =
   | { kind: 'child'; child: SubagentChild }
   | { kind: 'more'; count: number; childId: string }
   | { kind: 'finished'; count: number; label: string; childId: string };
 
-/** Settled dock copy: "3 subagents finished". */
+/** Finished dock copy: "3 subagents finished". */
 export function subagentFinishedLabel(count: number): string {
   return count === 1 ? '1 subagent finished' : `${count} subagents finished`;
 }
 
 /**
- * The dock's chips, decision D40: a chip per child while four fit, otherwise the
- * first three running children and a `+N more` chip. A settled-only set folds into
- * one finished chip so the dock never keeps a dead row of chips around.
+ * The dock's chips, decision D40: a chip per running child while four fit,
+ * otherwise the first three running children and a `+N more` chip. A child that
+ * failed or was cancelled keeps its own chip, because it needs attention and a
+ * check icon would report it as finished. Only children that finished cleanly fold
+ * into one finished chip, pushed last so the running chips keep spawn order.
  */
 export function subagentStripChips(children: readonly SubagentChild[]): SubagentChip[] {
   if (children.length === 0) return [];
 
   const running = children.filter(isRunningSubagent);
-  if (running.length === 0) {
-    const last = children[children.length - 1];
-    if (last === undefined) return [];
-    return [
-      {
-        kind: 'finished',
-        count: children.length,
-        label: subagentFinishedLabel(children.length),
-        childId: last.childId,
-      },
-    ];
-  }
+  const attention = children.filter(
+    (child) => !isRunningSubagent(child) && child.status !== 'done',
+  );
+  const done = children.filter((child) => child.status === 'done');
 
-  if (children.length <= SUBAGENT_CHIP_LIMIT) {
-    return children.map((child): SubagentChip => ({ kind: 'child', child }));
-  }
-
+  const chips: SubagentChip[] = [];
+  const shown =
+    running.length <= SUBAGENT_CHIP_LIMIT
+      ? running
+      : running.slice(0, SUBAGENT_CHIP_RUNNING_LIMIT);
+  chips.push(...shown.map((child): SubagentChip => ({ kind: 'child', child })));
   const target = running[0];
-  if (target === undefined) return [];
-  const shown = running.slice(0, SUBAGENT_CHIP_RUNNING_LIMIT);
-  return [
-    ...shown.map((child): SubagentChip => ({ kind: 'child', child })),
-    { kind: 'more', count: children.length - shown.length, childId: target.childId },
-  ];
+  if (running.length > SUBAGENT_CHIP_LIMIT && target !== undefined) {
+    chips.push({ kind: 'more', count: running.length - shown.length, childId: target.childId });
+  }
+  chips.push(...attention.map((child): SubagentChip => ({ kind: 'child', child })));
+
+  const lastDone = done[done.length - 1];
+  if (lastDone !== undefined) {
+    chips.push({
+      kind: 'finished',
+      count: done.length,
+      label: subagentFinishedLabel(done.length),
+      childId: lastDone.childId,
+    });
+  }
+  return chips;
 }
 
 /** Elapsed time from start to finish, or to `nowMs` while the child runs. */

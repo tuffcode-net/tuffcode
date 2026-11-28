@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BASE_SYSTEM_PROMPT,
+  CHILD_BASE_SYSTEM_PROMPT,
   CONFIG_TOOL,
   COUNCIL_PLANNER_PROMPT,
   COUNCIL_REVIEWER_PROMPT,
@@ -577,6 +578,43 @@ describe('assemblePrompt', () => {
     expect(second.dynamicPrompt).toContain('beta rule');
   });
 
+  it('includes unresolved review comments only when there are any', () => {
+    const withComments = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+    expect(withComments.sections.map((entry) => entry.name)).toContain('review-comments');
+    expect(withComments.systemPrompt).toContain('## Review comments');
+    expect(withComments.systemPrompt).toContain('src/a.ts:12');
+
+    const without = assemblePrompt({ turnContext, userMessage: 'fix the review' });
+    expect(without.sections.some((entry) => entry.name === 'review-comments')).toBe(false);
+  });
+
+  it('keeps review comments out of the cached prefix when the project has rules', () => {
+    const assembly = assemblePrompt({
+      projectRules: '- alpha rule',
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
+  it('keeps review comments out of the cached prefix when the project has no rules', () => {
+    const assembly = assemblePrompt({
+      reviewComments: '- src/a.ts:12 (new): handle the null case',
+      turnContext,
+      userMessage: 'fix the review',
+    });
+
+    expect(assembly.staticPrefix).not.toContain('## Review comments');
+    expect(assembly.dynamicPrompt).toContain('## Review comments');
+  });
+
   it('adds the plan mode rubric only on a plan turn', () => {
     const work = assemblePrompt({ turnContext, userMessage: 'build it' });
     expect(work.sections.some((entry) => entry.name === 'plan-mode')).toBe(false);
@@ -594,6 +632,61 @@ describe('assemblePrompt', () => {
     ]);
     expect(plan.systemPrompt).toContain('# Plan mode');
     expect(plan.total).toBeGreaterThan(work.total);
+  });
+
+  it('scopes a child prompt: no skills, todo, delegation or approvals', () => {
+    const child = assemblePrompt({
+      role: 'child',
+      customInstructions: 'Prefer pnpm.',
+      projectRules: '- alpha rule',
+      skills: 'alpha skill body',
+      availableSkills: '- alpha: does alpha',
+      turnContext,
+      userMessage: 'TASK\nmap the runner',
+    });
+
+    expect(child.sections.map((entry) => entry.name)).toEqual([
+      'base',
+      'custom-instructions',
+      'project-rules',
+      'turn-context',
+      'user-message',
+    ]);
+    expect(child.sections[0]?.text).toBe(CHILD_BASE_SYSTEM_PROMPT);
+    expect(child.systemPrompt).toContain('## Project rules\n');
+    expect(child.systemPrompt).toContain('- alpha rule');
+    expect(child.systemPrompt).not.toContain('## Available skills');
+    expect(child.systemPrompt).not.toContain('## Skills for this message');
+    expect(child.systemPrompt).not.toContain('alpha skill');
+
+    const base = child.sections[0]?.text ?? '';
+    for (const removed of [
+      '# Task tracking',
+      '# Subagents',
+      'Load a skill',
+      'taskkill',
+      'Keep destructive commands behind explicit approval',
+    ]) {
+      expect(base, removed).not.toContain(removed);
+    }
+    // The headings are the contract: a dropped section cannot quietly return.
+    expect([...base.matchAll(/^# (.+)$/gm)].map((match) => match[1])).toEqual([
+      'Operating loop',
+      'Investigation',
+      'Editing',
+      'Verification',
+      'Memory',
+      'Communication',
+      'Safety',
+      'Untrusted input',
+      'Claims',
+      'Standing rules',
+      'Windows',
+      'Output',
+    ]);
+    expect(estimateTokens(CHILD_BASE_SYSTEM_PROMPT)).toBeLessThan(
+      estimateTokens(BASE_SYSTEM_PROMPT),
+    );
   });
 
   it('omits empty custom instructions and empty brain blocks', () => {

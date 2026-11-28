@@ -180,6 +180,58 @@ function failingStream(message: string): ReadableStream<Uint8Array> {
 }
 
 describe('runTurn', () => {
+  it('stops a turn that never finishes with a visible reason', async () => {
+    const streams = Array.from({ length: 61 }, (_unused, index) =>
+      streamOf(toolUseEvents(index)),
+    );
+    const client = new FakeClient(streams);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'loop forever' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        maxTokens: 256,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error?.type === 'error' ? error.message : '').toContain('tool steps');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
+  });
+
+  it('reports a reply cut by max_tokens instead of finishing quietly', async () => {
+    const truncated = fixture('text-stream').map((entry) =>
+      entry.event === 'message_delta'
+        ? {
+            event: entry.event,
+            data: {
+              ...(entry.data as Record<string, unknown>),
+              delta: { stop_reason: 'max_tokens' },
+            },
+          }
+        : entry,
+    );
+    const client = new FakeClient([streamOf(truncated)]);
+    const events = await collect(
+      runTurn({
+        ctx: context(),
+        client,
+        messages: [{ role: 'user', content: 'go' }],
+        state: createToolSessionState(),
+        deps,
+        signal: new AbortController().signal,
+        maxTokens: 256,
+        requestApproval: async () => 'allow',
+      }),
+    );
+    const error = events.find((event) => event.type === 'error');
+    expect(error?.type === 'error' ? error.message : '').toContain('output token limit');
+    expect(events.at(-1)).toMatchObject({ type: 'turn.finished', reason: 'error' });
+  });
+
   it('assembles text across arbitrary SSE chunk splits and reports usage', async () => {
     const client = new FakeClient([streamOf(fixture('text-stream'), 7)]);
     const messages: AnthropicMessage[] = [{ role: 'user', content: 'go' }];
