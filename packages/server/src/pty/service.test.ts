@@ -8,7 +8,14 @@ import { commandExists } from './shell.js';
 import { TerminalService, terminalEnv, type TerminalDataEvent } from './service.js';
 
 const NOW = '2026-11-24T00:00:00.000Z';
-const ROUND_TRIP_TIMEOUT_MS = 20_000;
+/**
+ * Budget for one pty round trip. `node-pty` spawns the shell synchronously, and an
+ * interactive `powershell.exe` loads its profile before it echoes input: measured 11.4 s
+ * with a developer profile and 4.7 s with an empty one. At 20 s this test was one loaded
+ * run away from a false failure, and it was seen failing at 20.8 s. The assertions below
+ * check the round trip, not how long it takes.
+ */
+const ROUND_TRIP_TIMEOUT_MS = 60_000;
 
 interface ThreadOptions {
   /** Folder threads have no branch; a worktree thread defaults to a tuffcode branch. */
