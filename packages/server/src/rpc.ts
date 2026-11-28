@@ -27,11 +27,13 @@ import { createDiagnosticsHandlers } from './diagnostics.js';
 import { RpcError } from './errors.js';
 import type { EventBus } from './events.js';
 import {
+  assertGitHubCli,
   commitThread,
   createCheckpoint,
   getDiff,
   listCheckpoints,
   openPullRequest,
+  preparePullRequest,
   pushThread,
   revertCheckpoint,
 } from './git/index.js';
@@ -196,6 +198,10 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
   define('git.commit', ({ threadId, message }) => commitThread(deps.repos, threadId, message));
   define('git.push', ({ threadId }) => pushThread(deps.repos, threadId));
   define('git.pr', async ({ threadId, title, body, draft }) => {
+    // gh is checked before preparePullRequest, so a missing or signed-out CLI fails
+    // without first committing and pushing work the user did not expect to leave.
+    await assertGitHubCli(deps.repos, threadId);
+    await preparePullRequest(deps.repos, threadId, title);
     const result = await openPullRequest(deps.repos, threadId, { title, body, draft });
     deps.repos.threads.setPrUrl(threadId, result.url);
     emitThread(getThread(deps.repos, threadId));
