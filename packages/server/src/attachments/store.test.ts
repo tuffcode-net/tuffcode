@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_ATTACHMENT_BASE64_CHARS } from '@tuffcode/contracts';
 import { createTempEnv } from '../test-support.js';
 import { persistAttachments, readStoredAttachment, removeStoredAttachments, storeAttachmentBytes } from './store.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
 
 describe('attachment store', () => {
+  it('refuses a stored file larger than the cap the composer warns with', async () => {
+    const env = createTempEnv();
+    try {
+      // One byte past the decoded size the shared base64 cap allows.
+      const oversized = Buffer.alloc((MAX_ATTACHMENT_BASE64_CHARS * 3) / 4 + 1, 0x41);
+      const id = await storeAttachmentBytes(oversized.toString('base64'), 'image/png');
+      expect(await readStoredAttachment(id, 'image/png')).toBeNull();
+    } finally {
+      env.dispose();
+    }
+  });
+
   it('stores bytes under a content hash and reads them back', async () => {
     const env = createTempEnv();
     try {
