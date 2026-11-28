@@ -49,9 +49,26 @@ export function createTempEnv(): TempEnv {
       restoreEnv('TUFFCODE_HOME', previousHome);
       restoreEnv('LOCALAPPDATA', previousLocal);
       restoreEnv('XDG_DATA_HOME', previousXdg);
-      rmSync(root, { recursive: true, force: true });
+      removeTempRoot(root);
     },
   };
+}
+
+/**
+ * Removes a temp root, retrying briefly. Windows releases a git child's handles just
+ * after it exits, so a removal that follows real `git worktree` calls can see EPERM
+ * for a moment even though every process was awaited.
+ */
+function removeTempRoot(root: string): void {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 9) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
 }
 
 /** A logger that writes nowhere; runner and service tests use it by default. */
