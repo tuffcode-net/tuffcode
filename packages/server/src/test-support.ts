@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Project, ProviderView, Thread } from '@tuffcode/contracts';
 import type { Logger } from '@tuffcode/shared';
@@ -115,17 +123,82 @@ export function git(cwd: string, args: string[]): string {
   }).trim();
 }
 
+interface TemplateFile {
+  /** Path relative to the repository root. */
+  path: string;
+  content: Buffer;
+}
+
+const templateCache = new Map<string, TemplateFile[]>();
+
+/**
+ * The files of one repository per branch, built on first use and written out by every
+ * `initRepo` call.
+ *
+ * `initRepo` used to spawn seven `git` processes per test: init, four config writes, add
+ * and commit. Those spawns were the whole hook: measured 207 ms of a 240 ms hook on an
+ * idle machine and about 1.2 s per test on a loaded Windows CI runner. Process creation is
+ * the part that stalls when several test files spawn git at once, which is how a hook that
+ * normally costs a quarter of a second can time out at 20 s. Building the repository once
+ * per worker process and writing its eleven files for each call (measured 7 ms) keeps every
+ * test isolated while leaving no spawn in the hook.
+ *
+ * The template uses an empty git template directory: the default one copies sixteen sample
+ * hooks per repository, which made a copy as slow as the spawns it replaces.
+ */
+function templateFiles(branch: string): TemplateFile[] {
+  const cached = templateCache.get(branch);
+  if (cached !== undefined) return cached;
+  const root = mkdtempSync(join(tmpdir(), 'tuffcode-git-template-'));
+  try {
+    const emptyTemplate = join(root, 'empty');
+    mkdirSync(emptyTemplate, { recursive: true });
+    const path = join(root, 'repo');
+    mkdirSync(path, { recursive: true });
+    git(path, ['init', '-b', branch, `--template=${emptyTemplate}`]);
+    // Written as text instead of four `git config` spawns; the values are constants and
+    // the file format is stable.
+    appendFileSync(
+      join(path, '.git', 'config'),
+      '[user]\n\temail = tuffcode@example.com\n\tname = Tuffcode Test\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n',
+    );
+    writeFileSync(join(path, 'README.md'), '# demo\n');
+    git(path, ['add', '-A']);
+    git(path, ['commit', '-m', 'init']);
+    const files = readTree(path);
+    templateCache.set(branch, files);
+    return files;
+  } finally {
+    try {
+      removeTempRoot(root);
+    } catch {
+      // The fixture is in memory now; a leftover temp directory is harmless.
+    }
+  }
+}
+
+function readTree(root: string): TemplateFile[] {
+  const files: TemplateFile[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else files.push({ path: relative(root, full), content: readFileSync(full) });
+    }
+  };
+  walk(root);
+  return files;
+}
+
 /** Real repository with one commit on `main` and local identity configured. */
 export function initRepo(path: string, branch = 'main'): string {
+  const files = templateFiles(branch);
   mkdirSync(path, { recursive: true });
-  git(path, ['init', '-b', branch]);
-  git(path, ['config', 'user.email', 'tuffcode@example.com']);
-  git(path, ['config', 'user.name', 'Tuffcode Test']);
-  git(path, ['config', 'commit.gpgsign', 'false']);
-  git(path, ['config', 'core.autocrlf', 'false']);
-  writeFileSync(join(path, 'README.md'), '# demo\n');
-  git(path, ['add', '-A']);
-  git(path, ['commit', '-m', 'init']);
+  for (const file of files) {
+    const target = join(path, file.path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, file.content);
+  }
   return path;
 }
 
