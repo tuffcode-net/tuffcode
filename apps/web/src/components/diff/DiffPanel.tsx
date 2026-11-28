@@ -20,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import { toast } from 'sonner';
 import { useRpc } from '../../rpc/rpc-context';
 import { useAppStore } from '../../store/app-store';
 import { DIFF_LINE_MENU, type ActionContext } from '../actions';
@@ -77,6 +78,7 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
   const theme = useAppStore((state) => state.settings?.theme);
 
   const [checkpointId, setCheckpointId] = useState<string | null>(null);
+  const [savingCheckpoint, setSavingCheckpoint] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [files, setFiles] = useState<DiffFile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,6 +184,24 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
 
   function reload(): void {
     setReloadToken((token) => token + 1);
+  }
+
+  async function saveCheckpoint(): Promise<void> {
+    if (savingCheckpoint) return;
+    setSavingCheckpoint(true);
+    setCheckpointError(null);
+    try {
+      const label = `Checkpoint · ${new Date().toLocaleString()}`;
+      await rpc.request('checkpoints.create', { threadId, label });
+      toast.success('Checkpoint saved.');
+      reload();
+    } catch (caught) {
+      setCheckpointError(
+        caught instanceof Error ? caught.message : 'Could not save the checkpoint.',
+      );
+    } finally {
+      setSavingCheckpoint(false);
+    }
   }
 
   function toggleTree(): void {
@@ -325,6 +345,15 @@ function DiffPanelBody({ threadId, onOpenInTerminal }: DiffPanelProps) {
             onValueChange={handleCheckpointChange}
           />
         </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          data-testid="diff-save-checkpoint"
+          disabled={savingCheckpoint}
+          onClick={() => void saveCheckpoint()}
+        >
+          Save checkpoint
+        </Button>
         {files.length > 0 ? (
           <span className="ml-auto flex shrink-0 items-center gap-1.5 text-2xs tabular-nums">
             <span className="text-success-foreground">+{summary.additions}</span>

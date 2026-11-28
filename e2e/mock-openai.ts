@@ -63,6 +63,15 @@ export const MOCK_INTERLEAVE_PROSE_TWO = 'Reading the source after the readme.';
 export const MOCK_INTERLEAVE_FINAL = 'Both files were read in event order.';
 export const MOCK_TODO_ITEMS = ['Read the project', 'Write the change', 'Run the tests'];
 export const MOCK_TODO_FINAL = 'The plan is tracked in the todo list.';
+/** One reply with web and non-web links, so the link routing can be clicked end to end. */
+export const MOCK_LINK_REPLY =
+  '[the docs](https://example.com/docs) [local file](file:///C:/Windows/System32/calc.exe) ' +
+  '[run script](javascript:alert(1)) [custom app](tuffcode://open) ' +
+  '[unc path](\\\\server\\share\\note.txt) [misleading](file:///C:/Windows/win.ini) ' +
+  '[safe https](https://example.com/safe)';
+/** Visible text of MOCK_LINK_REPLY, with the targets removed. */
+export const MOCK_LINK_TEXT =
+  'the docs local file run script custom app unc path misleading safe https';
 
 const LF = String.fromCharCode(10);
 const DONE = String.fromCharCode(91, 68, 79, 78, 69, 93);
@@ -418,6 +427,12 @@ async function handleChat(
 
   if (prompt.includes('show-code')) {
     await streamText(response, MOCK_CODE_REPLY);
+    response.end();
+    return;
+  }
+
+  if (prompt.includes('link-test')) {
+    await streamText(response, MOCK_LINK_REPLY);
     response.end();
     return;
   }
