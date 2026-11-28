@@ -6,7 +6,7 @@ import {
   type TaskState,
 } from '@tuffcode/contracts';
 import { describe, expect, it } from 'vitest';
-import { councilSummary } from './council-goal';
+import { councilSummary, isCancelPending, stillTracksGoal } from './council-goal';
 
 const CREATED = '2026-01-01T00:00:00.000Z';
 
@@ -99,5 +99,32 @@ describe('councilAutonomy', () => {
     expect(councilAutonomy({ ...DEFAULT_SETTINGS, defaultPermissionMode: 'full-auto' })).toBe(
       'auto',
     );
+  });
+});
+
+describe('isCancelPending', () => {
+  it('locks Stop from the moment cancel is requested until the goal is terminal', () => {
+    expect(isCancelPending(true, 'planning', false)).toBe(true);
+    expect(isCancelPending(true, 'running', false)).toBe(true);
+    // The goal was started but its first status has not loaded yet.
+    expect(isCancelPending(true, undefined, false)).toBe(true);
+    expect(isCancelPending(true, 'cancelled', false)).toBe(false);
+    expect(isCancelPending(true, 'failed', false)).toBe(false);
+  });
+
+  it('does not lock Stop before a cancel and releases it when polling gives up', () => {
+    expect(isCancelPending(false, 'planning', false)).toBe(false);
+    expect(isCancelPending(false, undefined, false)).toBe(false);
+    expect(isCancelPending(true, 'planning', true)).toBe(false);
+  });
+});
+
+describe('stillTracksGoal', () => {
+  it('applies a late status load only for the goal the composer still follows', () => {
+    expect(stillTracksGoal('goal-1', 'goal-1')).toBe(true);
+    // A second goal was started while the cancel was settling.
+    expect(stillTracksGoal('goal-2', 'goal-1')).toBe(false);
+    // The composer was cleared by a thread switch or reload.
+    expect(stillTracksGoal(null, 'goal-1')).toBe(false);
   });
 });
