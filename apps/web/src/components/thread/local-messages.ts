@@ -7,6 +7,8 @@ const EMPTY_TURNS: ReadonlySet<string> = new Set();
 
 const messagesByThread = new Map<string, LocalUserMessage[]>();
 const supersededTurnsByThread = new Map<string, ReadonlySet<string>>();
+/** Persisted rows the user hid for this session; a refetch must not bring them back. */
+const hiddenByThread = new Map<string, ReadonlySet<string>>();
 const approvals = new Map<string, ApprovalChoice>();
 const listeners = new Set<() => void>();
 
@@ -134,11 +136,40 @@ export function pruneResolvedLocalUserMessages(
   emit();
 }
 
-/** Drops every echo of a thread; /clear replaced the transcript the echoes stood in for. */
+/**
+ * Drops every per-thread row: echoes, superseded turns and hidden ids. /clear replaced
+ * the transcript they stood in for, so each map has to go, not only the echoes.
+ */
 export function clearLocalUserMessages(threadId: string): void {
-  if (!messagesByThread.delete(threadId)) return;
-  supersededTurnsByThread.delete(threadId);
+  const hadEchoes = messagesByThread.delete(threadId);
+  const hadSuperseded = supersededTurnsByThread.delete(threadId);
+  const hadHidden = hiddenByThread.delete(threadId);
+  if (!hadEchoes && !hadSuperseded && !hadHidden) return;
   emit();
+}
+
+/** Hides one persisted message for the rest of the session. */
+export function hideLocalUserMessage(threadId: string, messageId: string): void {
+  const current = hiddenByThread.get(threadId) ?? EMPTY_TURNS;
+  if (current.has(messageId)) return;
+  hiddenByThread.set(threadId, new Set(current).add(messageId));
+  emit();
+}
+
+/** The rows a thread may render: persisted and echoed messages the user did not hide. */
+export function withoutHiddenMessages<T extends { id: string }>(
+  messages: readonly T[],
+  hidden: ReadonlySet<string>,
+): T[] {
+  return messages.filter((message) => !hidden.has(message.id));
+}
+
+export function hiddenMessageIds(threadId: string): ReadonlySet<string> {
+  return hiddenByThread.get(threadId) ?? EMPTY_TURNS;
+}
+
+export function useHiddenMessageIds(threadId: string): ReadonlySet<string> {
+  return useSyncExternalStore(subscribe, () => hiddenMessageIds(threadId));
 }
 
 export function localUserMessages(threadId: string): readonly LocalUserMessage[] {

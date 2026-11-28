@@ -66,7 +66,7 @@ export function TurnSummary({ thread }: { thread: Thread }) {
         body: `Changes from the Tuffcode chat "${thread.title}".`,
         draft: true,
       });
-      toast.success(`Draft pull request #${result.number} opened.`);
+      toast.success(`Draft pull request #${result.number} created.`);
       window.tuffcode?.openExternal?.(result.url);
     } catch (error) {
       setPrError(error instanceof Error ? error.message : 'Could not open the pull request.');

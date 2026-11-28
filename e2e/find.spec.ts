@@ -168,3 +168,40 @@ test('Ctrl+F opens in the clicked pane, not the routed thread', async ({
   await expect(sideLeaf.getByTestId('find-bar')).toBeVisible();
   await expect(routedLeaf.getByTestId('find-bar')).toHaveCount(0);
 });
+
+/**
+ * A message search that cannot reach the server must read as a failure with Retry,
+ * never as "No matches." beside the error. The bundled server is killed so the
+ * request cannot answer; the client rejects it when the socket closes.
+ */
+test('a failed message search shows an error with Retry, not an empty state', async ({
+  session,
+  workspace,
+  mock,
+  rpc,
+}) => {
+  const { page, app } = session;
+
+  await addProjectThroughUi(session, workspace);
+  await addMockProvider(page, mock);
+  await seedDefaultModel(rpc);
+  await createThreadThroughSidebar(page);
+
+  // The bundled server is the utility process named `tuffcode-server`; killing it
+  // closes the socket the renderer searches through.
+  await app.evaluate(({ app: electronApp }) => {
+    const server = electronApp.getAppMetrics().find((metric) => metric.name === 'tuffcode-server');
+    if (!server) throw new Error('tuffcode-server is not running');
+    process.kill(server.pid);
+  });
+
+  await page.getByTestId('sidebar-search').click();
+  await expect(page.getByTestId('search-dialog')).toBeVisible();
+  // Matches no chat title and no project, so only the remote search can answer.
+  await page.getByTestId('search-input').fill('zzz no such chat');
+
+  const retry = page.getByTestId('search-retry');
+  await expect(retry).toBeVisible({ timeout: 45_000 });
+  await expect(page.getByRole('alert')).toContainText('Message search unavailable');
+  await expect(page.getByText('No matches.')).toHaveCount(0);
+});
