@@ -4,4 +4,3 @@ export * from './events.js';
 export * from './remote.js';
 export * from './rpc.js';
 export * from './settings.js';
-export * from './themes.js';

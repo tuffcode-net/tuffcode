@@ -198,7 +198,7 @@ describe('browser bridge', () => {
     const unsubscribe = bridge.onMenuAction(() => undefined);
 
     expect(unsubscribe()).toBeUndefined();
-    expect(bridge.setTheme('dark', 'dark')).toBeUndefined();
+    expect(bridge.setTheme('dark')).toBeUndefined();
   });
 
   it('leaves native only features absent so their UI hides itself', () => {

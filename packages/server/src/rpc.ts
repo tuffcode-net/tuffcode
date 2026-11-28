@@ -33,7 +33,6 @@ import {
   getDiff,
   listCheckpoints,
   openPullRequest,
-  preparePullRequest,
   pushThread,
   revertCheckpoint,
 } from './git/index.js';
@@ -203,7 +202,6 @@ export function createRpcHandlers(deps: RpcDeps): RpcHandlers {
   define('git.commit', ({ threadId, message }) => commitThread(deps.repos, threadId, message));
   define('git.push', ({ threadId }) => pushThread(deps.repos, threadId));
   define('git.pr', async ({ threadId, title, body, draft }) => {
-    await preparePullRequest(deps.repos, threadId, title);
     const result = await openPullRequest(deps.repos, threadId, { title, body, draft });
     deps.repos.threads.setPrUrl(threadId, result.url);
     emitThread(getThread(deps.repos, threadId));
@@ -264,8 +262,7 @@ const DESKTOP_CONTEXT: DispatchContext = {
  * `internal`, which surfaces a server bug instead of shipping malformed data.
  *
  * A remote principal is checked against the allowlist before anything else runs, and
- * against the per method parameter guards after the params parse. Default deny means a
- * method registered later stays closed to a phone until it is listed on purpose.
+ * against the per method parameter guards after the params parse.
  */
 export async function dispatch(
   handlers: RpcHandlers,

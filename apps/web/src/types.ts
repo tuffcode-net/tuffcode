@@ -1,7 +1,7 @@
 export interface BootstrapInfo {
   port: number;
-  /** Bearer token from the desktop preload. Absent in a browser, where the
-   * socket authenticates with the session cookie the served origin set. */
+  /** Bearer token from the desktop preload. Absent in a browser, where the socket
+   * authenticates with the session cookie the served origin set. */
   token?: string;
   version: string;
   platform: string;
@@ -18,11 +18,9 @@ export interface BootstrapResponse {
   port: number;
   version: string;
   platform: string;
-  /** Absent from the served payload on purpose: a phone has no use for it. */
   home?: string;
   /** Socket path on the served origin, so a proxy can move it without a rebuild. */
   wsPath: string;
-  /** Present only when the server hands the socket token to the page. */
   token?: string;
   remote?: boolean;
   deviceName?: string;
@@ -54,13 +52,13 @@ export interface NotifyTestResult {
 }
 
 export interface TuffcodeBridge {
-  /** Present only on the shim `main.tsx` installs in a served page, so bootstrap
+  /** Present only on the shim main.tsx installs in a served page, so bootstrap
    * resolution can tell a browser from the Electron preload. */
   browser?: boolean;
   getBootstrap(): Promise<BootstrapInfo>;
   pickFolder(): Promise<string | null>;
   onMenuAction(callback: (action: string) => void): () => void;
-  setTheme(theme: string, kind: 'dark' | 'light'): void;
+  setTheme(theme: 'dark' | 'light' | 'system'): void;
   /** Absent when the preload predates the updater, so callers must guard. */
   checkForUpdates?(): Promise<UpdateCheckOutcome>;
   /** Round 4 additions; absent in a browser test harness, so callers must guard. */
